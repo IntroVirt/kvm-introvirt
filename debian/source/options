@@ -1,0 +1,7 @@
+compression = "xz"
+tar-ignore = patches
+tar-ignore = .git
+tar-ignore = kernel/.git
+tar-ignore = .pc
+tar-ignore = *.gz
+tar-ignore = *.dsc

@@ -1,0 +1,6 @@
+.pc/
+config.mk
+.build_vars
+kernel/
+*.dsc
+*.gz

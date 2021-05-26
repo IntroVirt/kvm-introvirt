@@ -1,0 +1,40 @@
+Source: kvm-introvirt
+Section: devel
+Priority: optional
+Maintainer: Stephen Pape <srpape@gmail.com>
+Build-Depends: linux-modules-5.4.0-73-generic,
+               linux-headers-5.4.0-73-generic,
+               bc,
+               devscripts,
+               quilt,
+               git,
+               flex,
+               bison,
+               libssl-dev,
+               libelf-dev,
+               debhelper
+Standards-Version: 4.4.0
+Homepage: https://github.com/IntroVirt/kvm-introvirt/
+Vcs-Browser: https://github.com/IntroVirt/kvm-introvirt/
+Vcs-Git: https://github.com/IntroVirt/kvm-introvirt.git
+
+Package: kvm-introvirt-5.4.0-73-generic
+Section: libs
+Architecture: any
+Pre-Depends: ${misc:Pre-Depends}
+Depends: ${misc:Depends},
+         linux-image-5.4.0-73-generic
+Multi-Arch: same
+Description: virtual machine introspection library
+ Virtual machine introspection KVM driver
+
+Package: kvm-introvirt
+Section: libs
+Architecture: any
+Pre-Depends: ${misc:Pre-Depends}
+Depends: ${misc:Depends},
+         kvm-introvirt-5.4.0-73-generic (=${source:Version})
+Multi-Arch: same
+Description: virtual machine introspection library
+ Virtual machine introspection KVM driver
+

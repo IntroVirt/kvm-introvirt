@@ -1,0 +1,9 @@
+#!/usr/bin/make -f
+
+clean:
+	dh_auto_configure
+	make clean
+
+%:
+	dh $@
+

@@ -1,0 +1,10 @@
+files
+.debhelper/
+debhelper-build-stamp
+*.debhelper
+*.substvars
+*.install
+*.postinst
+kvm-introvirt-*/
+kvm-introvirt/
+tmp/
