@@ -24,6 +24,7 @@ KERNEL_TAG=$(git branch|grep ^\*|grep -Po "(?<=$DISTRO_RELEASE/)[a-zA-Z0-9-\.]+(
 KERNEL_FLAVOR="-generic"
 KERNEL_VERSION=$(git branch|grep ^\*|grep -Po '(?<=\-)[0-9\.-]+(?=\.[0-9]+)')
 KERNEL_VERSION_FULL=$(git branch|grep ^\*|grep -Po '(?<=\-)[0-9\.-]+\.[0-9]+')
+PATCH_VERSION=$(head -n1 debian/changelog |grep -Po "(?<=5.4.0-73.82-).*(?=~)")
 
 #TODO: We're assuming Ubuntu right now
 
@@ -43,12 +44,14 @@ echo "KERNEL_FLAVOR=$KERNEL_FLAVOR" >> .build_vars
 echo "KERNEL_VERSION=$KERNEL_VERSION" >> .build_vars
 echo "KERNEL_VERSION_FULL=$KERNEL_VERSION_FULL" >> .build_vars
 echo "SUBMODULE_TAG=$SUBMODULE_TAG" >> .build_vars
+echo "PATCH_VERSION=$PATCH_VERSION" >> .build_vars
 
 truncate -s0 config.mk
 echo "KERNEL_LIB_PATH = /lib/modules/$KERNEL_VERSION$KERNEL_FLAVOR" >> config.mk
 echo "KERNEL_CONFIG_FILE = /boot/config-$KERNEL_VERSION$KERNEL_FLAVOR" >> config.mk
 echo "KERNEL_SYMVERS_FILE = /usr/src/linux-headers-$KERNEL_VERSION$KERNEL_FLAVOR/Module.symvers" >> config.mk
 echo 'INSTALL_DIR = $(DESTDIR)$(KERNEL_LIB_PATH)/updates/introvirt/' >> config.mk
+echo "PATCH_VERSION = $PATCH_VERSION" >> config.mk
 
 rm -f debian/*.install debian/*.postinst
 

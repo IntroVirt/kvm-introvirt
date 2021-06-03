@@ -1,3 +1,9 @@
+kvm-introvirt (5.4.0-73.82-0.57.0~focal8) focal; urgency=medium
+
+  * Get the version number in the build
+
+ -- Stephen Pape <srpape@gmail.com>  Thu, 03 Jun 2021 16:57:01 -0400
+
 kvm-introvirt (5.4.0-73.82-0.57.0~focal7) focal; urgency=medium
 
   * Still trying to make things work
