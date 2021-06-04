@@ -24,7 +24,7 @@ KERNEL_TAG=$(git branch|grep ^\*|grep -Po "(?<=$DISTRO_RELEASE/)[a-zA-Z0-9-\.]+(
 KERNEL_FLAVOR="-generic"
 KERNEL_VERSION=$(git branch|grep ^\*|grep -Po '(?<=\-)[0-9\.-]+(?=\.[0-9]+)')
 KERNEL_VERSION_FULL=$(git branch|grep ^\*|grep -Po '(?<=\-)[0-9\.-]+\.[0-9]+')
-PATCH_VERSION=$(head -n1 debian/changelog |grep -Po "(?<=5.4.0-73.82-).*(?=~)")
+PATCH_VERSION=$(head -n1 debian/changelog |grep -Po "(?<=$KERNEL_VERSION_FULL-).*(?=~)")
 
 #TODO: We're assuming Ubuntu right now
 
@@ -43,7 +43,6 @@ echo "KERNEL_TAG=$KERNEL_TAG" >> .build_vars
 echo "KERNEL_FLAVOR=$KERNEL_FLAVOR" >> .build_vars
 echo "KERNEL_VERSION=$KERNEL_VERSION" >> .build_vars
 echo "KERNEL_VERSION_FULL=$KERNEL_VERSION_FULL" >> .build_vars
-echo "SUBMODULE_TAG=$SUBMODULE_TAG" >> .build_vars
 echo "PATCH_VERSION=$PATCH_VERSION" >> .build_vars
 
 truncate -s0 config.mk
