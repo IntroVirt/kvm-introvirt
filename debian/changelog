@@ -1,3 +1,9 @@
+kvm-introvirt (5.4.0-74.83-0.57.0~focal2) focal; urgency=medium
+
+  * Fix missing patch version
+
+ -- Stephen Pape <srpape@gmail.com>  Fri, 04 Jun 2021 09:27:19 -0400
+
 kvm-introvirt (5.4.0-74.83-0.57.0~focal1) focal; urgency=medium
 
   * Initial build for 5.4.0-74.83
