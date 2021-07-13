@@ -1159,7 +1159,7 @@ Index: kvm-introvirt/kernel/arch/x86/kvm/x86.c
  	free_cpumask_var(wbinvd_dirty_mask);
  }
  
-@@ -10403,6 +10743,206 @@ int kvm_spec_ctrl_test_value(u64 value)
+@@ -10403,6 +10743,207 @@ int kvm_spec_ctrl_test_value(u64 value)
  }
  EXPORT_SYMBOL_GPL(kvm_spec_ctrl_test_value);
  
@@ -1174,10 +1174,11 @@ Index: kvm-introvirt/kernel/arch/x86/kvm/x86.c
 +	 */
 +	event->event_id = atomic64_inc_return(&vcpu->kvm->event_id);
 +	event->vcpu_id = vcpu->vcpu_id;
-+	__get_regs(vcpu, &event->regs);
-+	__get_sregs(vcpu, &event->sregs);
-+	kvm_vcpu_ioctl_x86_get_debugregs(vcpu, &event->debugregs);
-+
++    if (event->event_type != KVM_EVENT_SHUTDOWN) {
++	    __get_regs(vcpu, &event->regs);
++    	__get_sregs(vcpu, &event->sregs);
++    	kvm_vcpu_ioctl_x86_get_debugregs(vcpu, &event->debugregs);
++    }
 +
 +	mutex_lock(&vcpu->introspection_event_mutex);
 +	if (unlikely(vcpu->introspection_event != NULL))
