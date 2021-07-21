@@ -2,15 +2,15 @@ Index: kvm-introvirt/kernel/arch/x86/include/asm/kvm_host.h
 ===================================================================
 --- kvm-introvirt.orig/kernel/arch/x86/include/asm/kvm_host.h
 +++ kvm-introvirt/kernel/arch/x86/include/asm/kvm_host.h
-@@ -393,6 +393,7 @@ struct kvm_mmu {
+@@ -391,6 +391,7 @@ struct kvm_mmu {
+ 	int (*sync_page)(struct kvm_vcpu *vcpu,
+ 			 struct kvm_mmu_page *sp);
  	void (*invlpg)(struct kvm_vcpu *vcpu, gva_t gva, hpa_t root_hpa);
- 	void (*update_pte)(struct kvm_vcpu *vcpu, struct kvm_mmu_page *sp,
- 			   u64 *spte, const void *pte);
-+	int (*set_pte_perms)(struct kvm_vcpu *vcpu, u64 gpa, uint8_t perms, uint8_t* original_perms);
++    int (*set_pte_perms)(struct kvm_vcpu *vcpu, u64 gpa, uint8_t perms, uint8_t* original_perms);
  	hpa_t root_hpa;
  	gpa_t root_cr3;
  	union kvm_mmu_role mmu_role;
-@@ -1032,6 +1033,7 @@ struct kvm_x86_ops {
+@@ -1029,6 +1030,7 @@ struct kvm_x86_ops {
  	void (*vcpu_put)(struct kvm_vcpu *vcpu);
  
  	void (*update_bp_intercept)(struct kvm_vcpu *vcpu);
@@ -18,7 +18,7 @@ Index: kvm-introvirt/kernel/arch/x86/include/asm/kvm_host.h
  	int (*get_msr)(struct kvm_vcpu *vcpu, struct msr_data *msr);
  	int (*set_msr)(struct kvm_vcpu *vcpu, struct msr_data *msr);
  	u64 (*get_segment_base)(struct kvm_vcpu *vcpu, int seg);
-@@ -1218,6 +1220,12 @@ struct kvm_x86_ops {
+@@ -1215,6 +1217,12 @@ struct kvm_x86_ops {
  
  	bool (*apic_init_signal_blocked)(struct kvm_vcpu *vcpu);
  	int (*enable_direct_tlbflush)(struct kvm_vcpu *vcpu);
@@ -132,7 +132,7 @@ Index: kvm-introvirt/kernel/arch/x86/kvm/mmu.c
 ===================================================================
 --- kvm-introvirt.orig/kernel/arch/x86/kvm/mmu.c
 +++ kvm-introvirt/kernel/arch/x86/kvm/mmu.c
-@@ -4287,8 +4287,8 @@ check_hugepage_cache_consistency(struct
+@@ -4280,8 +4280,8 @@ check_hugepage_cache_consistency(struct
  	return kvm_mtrr_check_gfn_range_consistency(vcpu, gfn, page_num);
  }
  
@@ -143,7 +143,7 @@ Index: kvm-introvirt/kernel/arch/x86/kvm/mmu.c
  {
  	kvm_pfn_t pfn;
  	int r;
-@@ -4303,6 +4303,36 @@ static int tdp_page_fault(struct kvm_vcp
+@@ -4296,6 +4296,36 @@ static int tdp_page_fault(struct kvm_vcp
  
  	MMU_WARN_ON(!VALID_PAGE(vcpu->arch.mmu->root_hpa));
  
@@ -180,7 +180,7 @@ Index: kvm-introvirt/kernel/arch/x86/kvm/mmu.c
  	if (page_fault_handle_page_track(vcpu, error_code, gfn))
  		return RET_PF_EMULATE;
  
-@@ -4349,6 +4379,78 @@ out_unlock:
+@@ -4342,6 +4372,78 @@ out_unlock:
  	return r;
  }
  
@@ -259,15 +259,15 @@ Index: kvm-introvirt/kernel/arch/x86/kvm/mmu.c
  static void nonpaging_init_context(struct kvm_vcpu *vcpu,
  				   struct kvm_mmu *context)
  {
-@@ -5037,6 +5139,7 @@ static void init_kvm_tdp_mmu(struct kvm_
+@@ -5027,6 +5129,7 @@ static void init_kvm_tdp_mmu(struct kvm_
  
  	context->mmu_role.as_u64 = new_role.as_u64;
  	context->page_fault = tdp_page_fault;
 +	context->set_pte_perms = tdp_set_pte_perms;
  	context->sync_page = nonpaging_sync_page;
  	context->invlpg = nonpaging_invlpg;
- 	context->update_pte = nonpaging_update_pte;
-@@ -5647,6 +5750,8 @@ void kvm_mmu_invlpg(struct kvm_vcpu *vcp
+ 	context->shadow_root_level = kvm_x86_ops->get_tdp_level(vcpu);
+@@ -5618,6 +5721,8 @@ void kvm_mmu_invlpg(struct kvm_vcpu *vcp
  
  	kvm_x86_ops->tlb_flush_gva(vcpu, gva);
  	++vcpu->stat.invlpg;
@@ -704,7 +704,7 @@ Index: kvm-introvirt/kernel/arch/x86/kvm/x86.c
  #define KVM_NR_SHARED_MSRS 16
  
  struct kvm_shared_msrs_global {
-@@ -1529,6 +1533,16 @@ static int __kvm_set_msr(struct kvm_vcpu
+@@ -1528,6 +1532,16 @@ static int __kvm_set_msr(struct kvm_vcpu
  		 * invokes 64-bit SYSENTER.
  		 */
  		data = get_canonical(data, vcpu_virt_addr_bits(vcpu));
@@ -721,7 +721,7 @@ Index: kvm-introvirt/kernel/arch/x86/kvm/x86.c
  	}
  
  	msr.data = data;
-@@ -3322,7 +3336,8 @@ int kvm_vm_ioctl_check_extension(struct
+@@ -3321,7 +3335,8 @@ int kvm_vm_ioctl_check_extension(struct
  	case KVM_CAP_GET_MSR_FEATURES:
  	case KVM_CAP_MSR_PLATFORM_INFO:
  	case KVM_CAP_EXCEPTION_PAYLOAD:
@@ -731,7 +731,7 @@ Index: kvm-introvirt/kernel/arch/x86/kvm/x86.c
  		break;
  	case KVM_CAP_SYNC_REGS:
  		r = KVM_SYNC_X86_VALID_FIELDS;
-@@ -4180,6 +4195,26 @@ static int kvm_vcpu_ioctl_enable_cap(str
+@@ -4179,6 +4194,26 @@ static int kvm_vcpu_ioctl_enable_cap(str
  	}
  }
  
@@ -758,7 +758,7 @@ Index: kvm-introvirt/kernel/arch/x86/kvm/x86.c
  long kvm_arch_vcpu_ioctl(struct file *filp,
  			 unsigned int ioctl, unsigned long arg)
  {
-@@ -4551,6 +4586,107 @@ long kvm_arch_vcpu_ioctl(struct file *fi
+@@ -4550,6 +4585,107 @@ long kvm_arch_vcpu_ioctl(struct file *fi
  		r = 0;
  		break;
  	}
@@ -866,7 +866,7 @@ Index: kvm-introvirt/kernel/arch/x86/kvm/x86.c
  	default:
  		r = -EINVAL;
  	}
-@@ -5203,6 +5339,83 @@ set_pit2_out:
+@@ -5202,6 +5338,83 @@ set_pit2_out:
  	case KVM_SET_PMU_EVENT_FILTER:
  		r = kvm_vm_ioctl_set_pmu_event_filter(kvm, argp);
  		break;
@@ -950,7 +950,7 @@ Index: kvm-introvirt/kernel/arch/x86/kvm/x86.c
  	default:
  		r = -ENOTTY;
  	}
-@@ -6718,6 +6931,8 @@ int x86_emulate_instruction(struct kvm_v
+@@ -6717,6 +6930,8 @@ int x86_emulate_instruction(struct kvm_v
  	struct x86_emulate_ctxt *ctxt = &vcpu->arch.emulate_ctxt;
  	bool writeback = true;
  	bool write_fault_to_spt = vcpu->arch.write_fault_to_shadow_pgtable;
@@ -959,7 +959,7 @@ Index: kvm-introvirt/kernel/arch/x86/kvm/x86.c
  
  	vcpu->arch.l1tf_flush_l1d = true;
  
-@@ -6776,10 +6991,54 @@ int x86_emulate_instruction(struct kvm_v
+@@ -6775,10 +6990,54 @@ int x86_emulate_instruction(struct kvm_v
  		}
  	}
  
@@ -1018,7 +1018,7 @@ Index: kvm-introvirt/kernel/arch/x86/kvm/x86.c
  	}
  
  	/*
-@@ -6802,6 +7061,7 @@ int x86_emulate_instruction(struct kvm_v
+@@ -6801,6 +7060,7 @@ int x86_emulate_instruction(struct kvm_v
  	if (vcpu->arch.emulate_regs_need_sync_from_vcpu) {
  		vcpu->arch.emulate_regs_need_sync_from_vcpu = false;
  		emulator_invalidate_register_cache(ctxt);
@@ -1026,7 +1026,7 @@ Index: kvm-introvirt/kernel/arch/x86/kvm/x86.c
  	}
  
  restart:
-@@ -6869,6 +7129,12 @@ restart:
+@@ -6868,6 +7128,12 @@ restart:
  	} else
  		vcpu->arch.emulate_regs_need_sync_to_vcpu = true;
  
