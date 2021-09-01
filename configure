@@ -20,10 +20,18 @@ fi
 
 DISTRO=$(git branch|grep ^\*|grep -Po ' \K[a-zA-Z]+(?=/)')
 DISTRO_RELEASE=$(git branch|grep ^\*|grep -Po "(?<=$DISTRO/).*(?=/)")
-KERNEL_TAG=$(git branch|grep ^\*|grep -Po "(?<=$DISTRO_RELEASE/)[a-zA-Z0-9-\.]+(?=$)")
+HWE_TAG=$(git branch|grep ^\*|grep -Po "Ubuntu-hwe-[^-]+")
+if [ -z "$HWE_TAG" ]
+then
+    KERNEL_TAG=$(git branch|grep ^\*|grep -Po "(?<=$DISTRO_RELEASE/)[_a-zA-Z0-9-\.]+(?=$)")
+    HWE_VERSION=""
+else
+    KERNEL_TAG=$(git branch|grep ^\*|grep -Po "(?<=$DISTRO_RELEASE/)$HWE_TAG-[_a-zA-Z0-9-\.]+(?=$)")
+    HWE_VERSION=$(echo $HWE_TAG|grep -Po "[0-9\.]+")
+fi
 KERNEL_FLAVOR="-generic"
-KERNEL_VERSION=$(git branch|grep ^\*|grep -Po '(?<=\-)[0-9\.-]+(?=\.[0-9]+)')
-KERNEL_VERSION_FULL=$(git branch|grep ^\*|grep -Po '(?<=\-)[0-9\.-]+\.[0-9]+')
+KERNEL_VERSION=$(git branch|grep ^\*|grep -Po "(?<=$HWE_VERSION\-)[0-9\.-]+(?=\.[0-9]+)")
+KERNEL_VERSION_FULL=$(git branch|grep ^\*|grep -Po "(?<=$HWE_VERSION\-)[0-9\.-]+\.[0-9]+")
 PATCH_VERSION=$(head -n1 debian/changelog |grep -Po "(?<=$KERNEL_VERSION_FULL-).*(?=~)")
 
 #TODO: We're assuming Ubuntu right now

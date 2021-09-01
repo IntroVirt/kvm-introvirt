@@ -1,17 +1,5 @@
-kvm-introvirt (5.4.0-81.91-0.57.0~focal3) focal; urgency=medium
-
-  * Fix missing patches
-
- -- Stephen Pape <srpape@gmail.com>  Tue, 31 Aug 2021 12:55:25 -0400
-
-kvm-introvirt (5.4.0-81.91-0.57.0~focal2) focal; urgency=medium
-
-  * Fix missing patch version
-
- -- Stephen Pape <srpape@gmail.com>  Fri, 04 Jun 2021 09:27:19 -0400
-
-kvm-introvirt (5.4.0-81.91-0.57.0~focal1) focal; urgency=medium
+kvm-introvirt (5.4.0-81.91-0.57.0~bionic1) bionic; urgency=medium
 
   * Initial build for 5.4.0-81.91
 
- -- Stephen Pape <srpape@gmail.com>  Thu, 03 Jun 2021 17:32:43 -0400
+ -- Stephen Pape <srpape@gmail.com>  Tue, 31 Aug 2021 12:55:25 -0400
