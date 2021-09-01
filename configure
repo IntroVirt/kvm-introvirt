@@ -47,6 +47,8 @@ fi
 truncate -s0 .build_vars
 echo "DISTRO=$DISTRO" >> .build_vars
 echo "DISTRO_RELEASE=$DISTRO_RELEASE" >> .build_vars
+echo "HWE_TAG=$HWE_TAG" >> .build_vars
+echo "HWE_VERSION=$HWE_VERSION" >> .build_vars
 echo "KERNEL_TAG=$KERNEL_TAG" >> .build_vars
 echo "KERNEL_FLAVOR=$KERNEL_FLAVOR" >> .build_vars
 echo "KERNEL_VERSION=$KERNEL_VERSION" >> .build_vars
