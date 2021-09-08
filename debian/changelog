@@ -1,5 +1,5 @@
-kvm-introvirt (5.4.0-81.91-0.57.0~bionic1) bionic; urgency=medium
+kvm-introvirt (5.4.0-84.94-0.57.0~focal1) focal; urgency=medium
 
-  * Initial build for 5.4.0-81.91
+  * Initial build for 5.4.0-84.94
 
  -- Stephen Pape <srpape@gmail.com>  Tue, 31 Aug 2021 12:55:25 -0400
