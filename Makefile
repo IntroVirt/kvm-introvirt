@@ -23,3 +23,4 @@ install: build
 	cp ./kernel/arch/x86/kvm/kvm.ko $(INSTALL_DIR)
 	cp ./kernel/arch/x86/kvm/kvm-intel.ko $(INSTALL_DIR)
 	cp ./kernel/arch/x86/kvm/kvm-amd.ko $(INSTALL_DIR)
+	/bin/bash -c 'if [ -f /usr/sbin/depmod ]; then /usr/sbin/depmod -a; fi'
