@@ -49,3 +49,5 @@ git reset --hard
 git clean -x -d -f
 git checkout -b ubuntu/focal/<version>
 ```
+
+When running `./configure`, quilt will attempt to apply the patch to the new target kernel. If the patch does not cleanly apply, you will need to update it.
