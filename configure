@@ -61,6 +61,7 @@ echo "KERNEL_CONFIG_FILE = /boot/config-$KERNEL_VERSION$KERNEL_FLAVOR" >> config
 echo "KERNEL_SYMVERS_FILE = /usr/src/linux-headers-$KERNEL_VERSION$KERNEL_FLAVOR/Module.symvers" >> config.mk
 echo 'INSTALL_DIR = $(DESTDIR)$(KERNEL_LIB_PATH)/updates/introvirt/' >> config.mk
 echo "PATCH_VERSION = $PATCH_VERSION" >> config.mk
+echo "KERNEL_VERSION_FULLER = $KERNEL_VERSION$KERNEL_FLAVOR" >> config.mk
 
 rm -f debian/*.install debian/*.postinst
 

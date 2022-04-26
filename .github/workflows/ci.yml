@@ -1,0 +1,35 @@
+name: CI Tests
+
+on:
+  push:
+    paths-ignore: ['**.md']
+  pull_request:
+    paths-ignore: ['**.md']
+
+jobs:
+  Kernel_Module:
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          path: kvm-introvirt
+      - name: Setup
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc devscripts quilt git flex bison \
+            libssl-dev libelf-dev debhelper
+        shell: bash
+      - name: Validate Kernel Module Build
+        run: |
+          cd kvm-introvirt
+          ./configure
+          source ./.build_vars
+          sudo apt-get install -y linux-headers-${KERNEL_VERSION}${KERNEL_FLAVOR} \
+            linux-modules-${KERNEL_VERSION}${KERNEL_FLAVOR}
+          dpkg-buildpackage -us -uc -j
+        shell: bash
+      - name: Archive debian packages
+        uses: actions/upload-artifact@v3
+        with:
+          name: kvm-introvirt
+          path: kvm-introvirt-*.deb
