@@ -8,3 +8,5 @@ debhelper-build-stamp
 kvm-introvirt-*/
 kvm-introvirt/
 tmp/
+changelog
+control

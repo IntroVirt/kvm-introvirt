@@ -5,3 +5,4 @@ tar-ignore = kernel/.git
 tar-ignore = .pc
 tar-ignore = *.gz
 tar-ignore = *.dsc
+tar-ignore = out

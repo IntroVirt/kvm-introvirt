@@ -1,9 +1,9 @@
 Source: kvm-introvirt
 Section: devel
 Priority: optional
-Maintainer: Stephen Pape <srpape@gmail.com>
-Build-Depends: linux-modules-5.4.0-109-generic,
-               linux-headers-5.4.0-109-generic,
+Maintainer: Christopher Pelloux <git@chp.io>
+Build-Depends: linux-modules-@KERNEL_VERSION_KERNEL_FLAVOR@,
+               linux-headers-@KERNEL_VERSION_KERNEL_FLAVOR@,
                bc,
                devscripts,
                quilt,
@@ -18,12 +18,12 @@ Homepage: https://github.com/IntroVirt/kvm-introvirt/
 Vcs-Browser: https://github.com/IntroVirt/kvm-introvirt/
 Vcs-Git: https://github.com/IntroVirt/kvm-introvirt.git
 
-Package: kvm-introvirt-5.4.0-109-generic
+Package: kvm-introvirt-@KERNEL_VERSION_KERNEL_FLAVOR@
 Section: libs
 Architecture: any
 Pre-Depends: ${misc:Pre-Depends}
 Depends: ${misc:Depends},
-         linux-image-5.4.0-109-generic
+         linux-image-@KERNEL_VERSION_KERNEL_FLAVOR@
 Multi-Arch: same
 Description: virtual machine introspection library
  Virtual machine introspection KVM driver
@@ -33,7 +33,7 @@ Section: libs
 Architecture: any
 Pre-Depends: ${misc:Pre-Depends}
 Depends: ${misc:Depends},
-         kvm-introvirt-5.4.0-109-generic (=${source:Version})
+         kvm-introvirt-@KERNEL_VERSION_KERNEL_FLAVOR@ (=${source:Version})
 Multi-Arch: same
 Description: virtual machine introspection library
  Virtual machine introspection KVM driver
