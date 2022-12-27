@@ -68,6 +68,9 @@ get_remote_for_distro() {
     ubuntu/focal)
         echo https://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/focal
         ;;
+    ubuntu/jammy)
+        echo https://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/jammy
+        ;;
     esac
 }
 
