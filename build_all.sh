@@ -9,9 +9,13 @@ KERNEL_TARGETS=""
 # Options are: configure, compile, package, source
 PACKAGE_TARGET=compile
 # Commands appended in Docker
-DOCKER_SHELL_APPEND=""
 # DOCKER_SHELL_APPEND=" || bash" # Get an interactive shell in case of an error
 # DOCKER_SHELL_APPEND="; bash" # Always get an interactive shell
+DOCKER_SHELL_APPEND=""
+# Also build integration tests
+BUILD_TESTS=1
+# Location of generated artifacts
+OUT_DIR=$DIR/out
 
 version_tag() {
     local distro=$1
@@ -197,5 +201,15 @@ for KV in $KERNEL_TARGETS; do
                 # && export UBUNTU_KERNEL_VERSION=$KV \
                 # && ./configure_ubuntu.sh \
         fi
+    fi
+
+    if [[ $BUILD_TESTS && $PACKAGE_TARGET = compile || $BUILD_TESTS && $PACKAGE_TARGET = package ]]; then
+        out_dir=$DIR/out/tests/${KV}
+        mkdir -p $out_dir
+
+        pushd $DIR/kernel/tools/testing/selftests/kvm
+        make -j
+        find . -type f -executable -exec cp {} $out_dir/ \;
+        popd
     fi
 done
