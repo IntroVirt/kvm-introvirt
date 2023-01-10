@@ -1,0 +1,22 @@
+diff --git a/scripts/gdb/linux/rbtree.py b/scripts/gdb/linux/rbtree.py
+index c4b991607917..fe462855eefd 100644
+--- a/scripts/gdb/linux/rbtree.py
++++ b/scripts/gdb/linux/rbtree.py
+@@ -17,7 +17,7 @@ def rb_first(root):
+         raise gdb.GdbError("Must be struct rb_root not {}".format(root.type))
+ 
+     node = root['rb_node']
+-    if node is 0:
++    if node == 0:
+         return None
+ 
+     while node['rb_left']:
+@@ -33,7 +33,7 @@ def rb_last(root):
+         raise gdb.GdbError("Must be struct rb_root not {}".format(root.type))
+ 
+     node = root['rb_node']
+-    if node is 0:
++    if node == 0:
+         return None
+ 
+     while node['rb_right']:

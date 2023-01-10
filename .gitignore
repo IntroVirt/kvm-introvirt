@@ -4,3 +4,4 @@ config.mk
 kernel/
 *.dsc
 *.gz
+out/

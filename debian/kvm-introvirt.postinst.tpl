@@ -22,13 +22,13 @@ function unload_module() {
 }
 
 if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ] || [ "$1" = "abort-remove" ] ; then
-        if [ -e /boot/System.map-5.4.0-73-generic ]; then
-                depmod -a -F /boot/System.map-5.4.0-73-generic 5.4.0-73-generic || true
+        if [ -e /boot/System.map-@KERNEL_VERSION_KERNEL_FLAVOR@ ]; then
+                depmod -a -F /boot/System.map-@KERNEL_VERSION_KERNEL_FLAVOR@ @KERNEL_VERSION_KERNEL_FLAVOR@ || true
         fi
 fi
 
 RUNNING_KERNEL=$(uname -r)
-if [ "$RUNNING_KERNEL" != "5.4.0-73-generic" ]; then
+if [ "$RUNNING_KERNEL" != "@KERNEL_VERSION_KERNEL_FLAVOR@" ]; then
     echo "Modules are not for running kernel. Not reloading."
     exit 0
 fi

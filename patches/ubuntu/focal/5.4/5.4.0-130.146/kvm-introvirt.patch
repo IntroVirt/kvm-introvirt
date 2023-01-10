@@ -1,0 +1,2179 @@
+Index: kvm-introvirt/kernel/arch/x86/include/asm/kvm_host.h
+===================================================================
+--- kvm-introvirt.orig/kernel/arch/x86/include/asm/kvm_host.h
++++ kvm-introvirt/kernel/arch/x86/include/asm/kvm_host.h
+@@ -391,6 +391,7 @@ struct kvm_mmu {
+ 	int (*sync_page)(struct kvm_vcpu *vcpu,
+ 			 struct kvm_mmu_page *sp);
+ 	void (*invlpg)(struct kvm_vcpu *vcpu, gva_t gva, hpa_t root_hpa);
++    int (*set_pte_perms)(struct kvm_vcpu *vcpu, u64 gpa, uint8_t perms, uint8_t* original_perms);
+ 	hpa_t root_hpa;
+ 	gpa_t root_cr3;
+ 	union kvm_mmu_role mmu_role;
+@@ -1029,6 +1030,7 @@ struct kvm_x86_ops {
+ 	void (*vcpu_put)(struct kvm_vcpu *vcpu);
+ 
+ 	void (*update_bp_intercept)(struct kvm_vcpu *vcpu);
++	void (*update_syscall_intercept)(struct kvm_vcpu *vcpu);
+ 	int (*get_msr)(struct kvm_vcpu *vcpu, struct msr_data *msr);
+ 	int (*set_msr)(struct kvm_vcpu *vcpu, struct msr_data *msr);
+ 	u64 (*get_segment_base)(struct kvm_vcpu *vcpu, int seg);
+@@ -1215,6 +1217,12 @@ struct kvm_x86_ops {
+ 
+ 	bool (*apic_init_signal_blocked)(struct kvm_vcpu *vcpu);
+ 	int (*enable_direct_tlbflush)(struct kvm_vcpu *vcpu);
++
++	/* IntroVirt patch */
++	int (*set_cr_monitor)(struct kvm_vcpu *vcpu, int cr, int mode);
++	int (*set_monitor_trap_flag)(struct kvm_vcpu *vcpu, bool enabled);
++	int (*set_invlpg_monitor)(struct kvm_vcpu *vcpu, bool enabled);
++	bool (*hap_permissions_allowed)(uint16_t perms);
+ };
+ 
+ struct kvm_arch_async_pf {
+Index: kvm-introvirt/kernel/arch/x86/kvm/emulate.c
+===================================================================
+--- kvm-introvirt.orig/kernel/arch/x86/kvm/emulate.c
++++ kvm-introvirt/kernel/arch/x86/kvm/emulate.c
+@@ -2845,6 +2845,69 @@ static int em_syscall(struct x86_emulate
+ 	return X86EMUL_CONTINUE;
+ }
+ 
++static int em_sysret(struct x86_emulate_ctxt *ctxt)
++{
++	const struct x86_emulate_ops *ops = ctxt->ops;
++	struct desc_struct cs, ss;
++	u64 msr_data, rcx;
++	u16 cs_sel, ss_sel;
++	u64 efer = 0;
++
++	/* syscall is not available in real mode */
++	if(ctxt->mode == X86EMUL_MODE_REAL || ctxt->mode == X86EMUL_MODE_VM86)
++		return emulate_ud(ctxt);
++
++	if(!(em_syscall_is_enabled(ctxt)))
++		return emulate_ud(ctxt);
++
++	if(ctxt->ops->cpl(ctxt) != 0) {
++		return emulate_gp(ctxt, 0);
++	}
++
++	//check if RCX is in canonical form
++	rcx = reg_read(ctxt, VCPU_REGS_RCX);
++	if(((rcx & 0xFFFF800000000000) != 0xFFFF800000000000)
++			&& ((rcx & 0x00007FFFFFFFFFFF) != rcx)) {
++		return emulate_gp(ctxt, 0);
++	}
++
++	ops->get_msr(ctxt, MSR_EFER, &efer);
++	setup_syscalls_segments(ctxt, &cs, &ss);
++
++	if (!(efer & EFER_SCE))
++		return emulate_ud(ctxt);
++
++	ops->get_msr(ctxt, MSR_STAR, &msr_data);
++	msr_data >>= 48;
++
++	//setup code segment, atleast what is left to do.
++	//setup_syscalls_segments does most of the work for us
++	if(ctxt->mode == X86EMUL_MODE_PROT64) { //if longmode
++		cs_sel = (u16)((msr_data + 0x10) | 0x3);
++		cs.l = 1;
++		cs.d = 0;
++	} else {
++		cs_sel = (u16)(msr_data | 0x3);
++		cs.l = 0;
++		cs.d = 1;
++	}
++	cs.dpl = 0x3;
++
++	//setup stack segment, atleast what is left to do.
++	//setup_syscalls_segments does most of the work for us
++	ss_sel = (u16)((msr_data + 0x8) | 0x3);
++	ss.dpl = 0x3;
++
++	ops->set_segment(ctxt, cs_sel, &cs, 0, VCPU_SREG_CS);
++	ops->set_segment(ctxt, ss_sel, &ss, 0, VCPU_SREG_SS);
++
++	ctxt->eflags = (reg_read(ctxt, VCPU_REGS_R11) & 0x3c7fd7) | 0x2;
++
++	ctxt->_eip = reg_read(ctxt, VCPU_REGS_RCX);
++
++	return X86EMUL_CONTINUE;
++}
++
+ static int em_sysenter(struct x86_emulate_ctxt *ctxt)
+ {
+ 	const struct x86_emulate_ops *ops = ctxt->ops;
+@@ -4837,7 +4900,7 @@ static const struct opcode twobyte_table
+ 	/* 0x00 - 0x0F */
+ 	G(0, group6), GD(0, &group7), N, N,
+ 	N, I(ImplicitOps | EmulateOnUD, em_syscall),
+-	II(ImplicitOps | Priv, em_clts, clts), N,
++	II(ImplicitOps | Priv, em_clts, clts), I(ImplicitOps | EmulateOnUD, em_sysret),
+ 	DI(ImplicitOps | Priv, invd), DI(ImplicitOps | Priv, wbinvd), N, N,
+ 	N, D(ImplicitOps | ModRM | SrcMem | NoAccess), N, N,
+ 	/* 0x10 - 0x1F */
+Index: kvm-introvirt/kernel/arch/x86/kvm/irq.c
+===================================================================
+--- kvm-introvirt.orig/kernel/arch/x86/kvm/irq.c
++++ kvm-introvirt/kernel/arch/x86/kvm/irq.c
+@@ -53,6 +53,9 @@ int kvm_cpu_has_extint(struct kvm_vcpu *
+ 	 * pending interrupt or should re-inject an injected
+ 	 * interrupt.
+ 	 */
++	if (v->monitor_trap_flag)
++		return 0;
++
+ 	if (!lapic_in_kernel(v))
+ 		return v->arch.interrupt.injected;
+ 
+Index: kvm-introvirt/kernel/arch/x86/kvm/mmu.c
+===================================================================
+--- kvm-introvirt.orig/kernel/arch/x86/kvm/mmu.c
++++ kvm-introvirt/kernel/arch/x86/kvm/mmu.c
+@@ -4280,8 +4280,8 @@ check_hugepage_cache_consistency(struct
+ 	return kvm_mtrr_check_gfn_range_consistency(vcpu, gfn, page_num);
+ }
+ 
+-static int tdp_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
+-			  bool prefault)
++static int __tdp_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
++			  bool prefault, bool guest_initiated)
+ {
+ 	kvm_pfn_t pfn;
+ 	int r;
+@@ -4296,6 +4296,36 @@ static int tdp_page_fault(struct kvm_vcp
+ 
+ 	MMU_WARN_ON(!VALID_PAGE(vcpu->arch.mmu->root_hpa));
+ 
++	/* If IntroVirt is hooking EPT faults, deliver here */
++	if (guest_initiated && kvm_is_mem_event_enabled(vcpu->kvm))
++	{
++		/* Look up the fault */
++		struct kvm *kvm = vcpu->kvm;
++		struct mem_access_entry * entry;
++		const u64 gfn = gpa >> PAGE_SHIFT;
++		int found_match = 0;
++
++		mutex_lock(&kvm->mem_access_table.mutex);
++
++		/* Search for the entry */
++		hash_for_each_possible(kvm->mem_access_table.table, entry, node, gfn)
++		{
++			/* Found a match, check requested permission */
++			if(entry->gfn == gfn) {
++				/* Match! */
++				found_match = true;
++				break;
++			}
++		}
++		mutex_unlock(&kvm->mem_access_table.mutex);
++
++		/* If we found a match, deliver it */
++		if (found_match) {
++			kvm_deliver_mem_event(vcpu, gpa, error_code);
++			return RET_PF_RETRY;
++		}
++	}
++
+ 	if (page_fault_handle_page_track(vcpu, error_code, gfn))
+ 		return RET_PF_EMULATE;
+ 
+@@ -4342,6 +4372,78 @@ out_unlock:
+ 	return r;
+ }
+ 
++static int tdp_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
++			  bool prefault)
++{
++	return __tdp_page_fault(vcpu, gpa, error_code, prefault, true);
++}
++
++
++static int tdp_set_pte_perms(struct kvm_vcpu *vcpu, u64 gfn, uint8_t perms, uint8_t* original_perms)
++{
++	struct kvm_shadow_walk_iterator iterator;
++	int result = -ESRCH;
++	u64 gpa = gfn << PAGE_SHIFT;
++	u64 spte = 0ull;
++
++	// Turn off any extra bits in the perms
++	perms &= (PT_USER_MASK|PT_WRITABLE_MASK|PT_PRESENT_MASK);
++
++	// Validate the HAP permissions are allowed
++	if (unlikely(!kvm_x86_ops->hap_permissions_allowed(perms)))
++		return -EINVAL;
++
++	if (!VALID_PAGE(vcpu->arch.mmu->root_hpa))
++	{
++		result = kvm_mmu_load(vcpu);
++		if (unlikely(result))
++			return result;
++	}
++
++retry:
++	walk_shadow_page_lockless_begin(vcpu);
++
++	/* Find the page in the shadow tables */
++	for_each_shadow_entry_lockless(vcpu, gpa, iterator, spte)
++		if (!is_shadow_present_pte(spte) ||
++			iterator.level < PT_PAGE_TABLE_LEVEL)
++				{
++					/* The page is not present, so page it in for the guest process */
++					struct mm_struct* mm;
++					int r;
++
++					walk_shadow_page_lockless_end(vcpu);
++
++					/* Dirty hack */
++					/* hva_to_pfn() is hard-coded to current->mm */
++					mm = current->mm;
++					current->mm = vcpu->kvm->mm;
++					r = __tdp_page_fault(vcpu, gpa, 0, false, false);
++					current->mm = mm;
++					if (r)
++						return r;
++					goto retry;
++				}
++
++	// Try a few times to update the pte
++	result = -EBUSY;
++	do {
++		u64 new_spte = (spte & ~(PT_USER_MASK|PT_WRITABLE_MASK|PT_PRESENT_MASK)) | perms;
++
++		if (original_perms != NULL)
++			*original_perms = (spte & (PT_USER_MASK|PT_WRITABLE_MASK|PT_PRESENT_MASK));
++
++		if (cmpxchg64(iterator.sptep, spte, new_spte) == spte)
++		{
++			result = 0;
++			break;
++		}
++	} while(true);
++
++	walk_shadow_page_lockless_end(vcpu);
++	return result;
++}
++
+ static void nonpaging_init_context(struct kvm_vcpu *vcpu,
+ 				   struct kvm_mmu *context)
+ {
+@@ -5035,6 +5137,7 @@ static void init_kvm_tdp_mmu(struct kvm_
+ 
+ 	context->mmu_role.as_u64 = new_role.as_u64;
+ 	context->page_fault = tdp_page_fault;
++	context->set_pte_perms = tdp_set_pte_perms;
+ 	context->sync_page = nonpaging_sync_page;
+ 	context->invlpg = nonpaging_invlpg;
+ 	context->shadow_root_level = kvm_x86_ops->get_tdp_level(vcpu);
+@@ -5626,6 +5729,8 @@ void kvm_mmu_invlpg(struct kvm_vcpu *vcp
+ 
+ 	kvm_x86_ops->tlb_flush_gva(vcpu, gva);
+ 	++vcpu->stat.invlpg;
++
++	kvm_deliver_invlpg_event(vcpu, gva);
+ }
+ EXPORT_SYMBOL_GPL(kvm_mmu_invlpg);
+ 
+Index: kvm-introvirt/kernel/arch/x86/kvm/svm.c
+===================================================================
+--- kvm-introvirt.orig/kernel/arch/x86/kvm/svm.c
++++ kvm-introvirt/kernel/arch/x86/kvm/svm.c
+@@ -7254,6 +7254,26 @@ static bool svm_apic_init_signal_blocked
+ 		   (svm->vmcb->control.intercept & (1ULL << INTERCEPT_INIT));
+ }
+ 
++static int svm_set_cr_monitor(struct kvm_vcpu* vcpu, int cr, int mode)
++{
++	return -ENODEV;
++}
++
++static int svm_set_monitor_trap_flag(struct kvm_vcpu* vcpu, bool enabled)
++{
++	return -ENODEV;
++}
++
++static int svm_set_invlpg_monitor(struct kvm_vcpu *vcpu, bool enabled)
++{
++	return -ENODEV;
++}
++
++static bool svm_hap_permissions_allowed(uint16_t perms)
++{
++	return false;
++}
++
+ static struct kvm_x86_ops svm_x86_ops __ro_after_init = {
+ 	.cpu_has_kvm_support = has_svm,
+ 	.disabled_by_bios = is_disabled,
+@@ -7281,6 +7301,7 @@ static struct kvm_x86_ops svm_x86_ops __
+ 	.vcpu_unblocking = svm_vcpu_unblocking,
+ 
+ 	.update_bp_intercept = update_bp_intercept,
++	.update_syscall_intercept = update_bp_intercept, // TODO: Change when we have introspection on SVM
+ 	.get_msr_feature = svm_get_msr_feature,
+ 	.get_msr = svm_get_msr,
+ 	.set_msr = svm_set_msr,
+@@ -7393,6 +7414,12 @@ static struct kvm_x86_ops svm_x86_ops __
+ 	.need_emulation_on_page_fault = svm_need_emulation_on_page_fault,
+ 
+ 	.apic_init_signal_blocked = svm_apic_init_signal_blocked,
++
++	/* IntroVirt patch */
++	.set_cr_monitor = svm_set_cr_monitor,
++	.set_monitor_trap_flag = svm_set_monitor_trap_flag,
++	.set_invlpg_monitor = svm_set_invlpg_monitor,
++	.hap_permissions_allowed = svm_hap_permissions_allowed
+ };
+ 
+ static int __init svm_init(void)
+Index: kvm-introvirt/kernel/arch/x86/kvm/vmx/capabilities.h
+===================================================================
+--- kvm-introvirt.orig/kernel/arch/x86/kvm/vmx/capabilities.h
++++ kvm-introvirt/kernel/arch/x86/kvm/vmx/capabilities.h
+@@ -64,6 +64,7 @@ extern struct vmcs_config vmcs_config;
+ struct vmx_capability {
+ 	u32 ept;
+ 	u32 vpid;
++	bool mtf;
+ };
+ extern struct vmx_capability vmx_capability;
+ 
+@@ -112,6 +113,11 @@ static inline bool cpu_has_vmx_tpr_shado
+ 	return vmcs_config.cpu_based_exec_ctrl & CPU_BASED_TPR_SHADOW;
+ }
+ 
++static inline bool cpu_has_monitor_trap_flag(void)
++{
++	return vmx_capability.mtf;
++}
++
+ static inline bool cpu_need_tpr_shadow(struct kvm_vcpu *vcpu)
+ {
+ 	return cpu_has_vmx_tpr_shadow() && lapic_in_kernel(vcpu);
+Index: kvm-introvirt/kernel/arch/x86/kvm/vmx/vmx.c
+===================================================================
+--- kvm-introvirt.orig/kernel/arch/x86/kvm/vmx/vmx.c
++++ kvm-introvirt/kernel/arch/x86/kvm/vmx/vmx.c
+@@ -818,7 +818,7 @@ void update_exception_bitmap(struct kvm_
+ 	 * We intercept those #GP and allow access to them anyway
+ 	 * as VMware does.
+ 	 */
+-	if (enable_vmware_backdoor)
++	if (enable_vmware_backdoor | vcpu->syscall_hook_enabled)
+ 		eb |= (1u << GP_VECTOR);
+ 	if ((vcpu->guest_debug &
+ 	     (KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_SW_BP)) ==
+@@ -1037,6 +1037,11 @@ static bool update_transition_efer(struc
+ 		ignore_bits &= ~(u64)EFER_SCE;
+ #endif
+ 
++	/* IntroVirt patch to intercept system calls */
++	if (vmx->vcpu.syscall_hook_enabled) {
++		guest_efer &= ~EFER_SCE;
++	}
++
+ 	/*
+ 	 * On EPT, we can't emulate NX, so we must switch EFER atomically.
+ 	 * On CPUs that support "load IA32_EFER", always switch EFER
+@@ -1870,7 +1875,8 @@ static int vmx_get_msr(struct kvm_vcpu *
+ 		msr_info->data = to_vmx(vcpu)->spec_ctrl;
+ 		break;
+ 	case MSR_IA32_SYSENTER_CS:
+-		msr_info->data = vmcs_read32(GUEST_SYSENTER_CS);
++		/* IntroVirt Patch - Always return our shadow */
++		msr_info->data = vcpu->shadow_msr_ia32_sysenter_cs;
+ 		break;
+ 	case MSR_IA32_SYSENTER_EIP:
+ 		msr_info->data = vmcs_readl(GUEST_SYSENTER_EIP);
+@@ -2423,6 +2429,7 @@ static __init int setup_vmcs_config(stru
+ 
+ 	opt = CPU_BASED_TPR_SHADOW |
+ 	      CPU_BASED_USE_MSR_BITMAPS |
++	      CPU_BASED_MONITOR_TRAP_FLAG |
+ 	      CPU_BASED_ACTIVATE_SECONDARY_CONTROLS;
+ 	if (adjust_vmx_controls(min, opt, MSR_IA32_VMX_PROCBASED_CTLS,
+ 				&_cpu_based_exec_control) < 0)
+@@ -2432,6 +2439,12 @@ static __init int setup_vmcs_config(stru
+ 		_cpu_based_exec_control &= ~CPU_BASED_CR8_LOAD_EXITING &
+ 					   ~CPU_BASED_CR8_STORE_EXITING;
+ #endif
++	if (_cpu_based_exec_control & CPU_BASED_MONITOR_TRAP_FLAG) {
++		_cpu_based_exec_control &= ~CPU_BASED_MONITOR_TRAP_FLAG;
++		vmx_cap->mtf = true;
++	} else {
++		vmx_cap->mtf = false;
++	}
+ 	if (_cpu_based_exec_control & CPU_BASED_ACTIVATE_SECONDARY_CONTROLS) {
+ 		min2 = 0;
+ 		opt2 = SECONDARY_EXEC_VIRTUALIZE_APIC_ACCESSES |
+@@ -2865,14 +2878,15 @@ void vmx_set_efer(struct kvm_vcpu *vcpu,
+ 		return;
+ 
+ 	vcpu->arch.efer = efer;
++
+ 	if (efer & EFER_LMA) {
+ 		vm_entry_controls_setbit(to_vmx(vcpu), VM_ENTRY_IA32E_MODE);
+ 		msr->data = efer;
+ 	} else {
+ 		vm_entry_controls_clearbit(to_vmx(vcpu), VM_ENTRY_IA32E_MODE);
+-
+ 		msr->data = efer & ~EFER_LME;
+ 	}
++
+ 	setup_msrs(vmx);
+ }
+ 
+@@ -4711,7 +4725,7 @@ static int handle_exception_nmi(struct k
+ 		error_code = vmcs_read32(VM_EXIT_INTR_ERROR_CODE);
+ 
+ 	if (!vmx->rmode.vm86_active && is_gp_fault(intr_info)) {
+-		WARN_ON_ONCE(!enable_vmware_backdoor);
++		/* WARN_ON_ONCE(!enable_vmware_backdoor); */
+ 
+ 		/*
+ 		 * VMware backdoor emulation on #GP interception only handles
+@@ -4784,6 +4798,24 @@ static int handle_exception_nmi(struct k
+ 		rip = kvm_rip_read(vcpu);
+ 		kvm_run->debug.arch.pc = vmcs_readl(GUEST_CS_BASE) + rip;
+ 		kvm_run->debug.arch.exception = ex_no;
++
++		/*
++		 * Check if we have an introspection client attached
++		 */
++		if(vcpu->introspection_mm)
++		{
++			if(ex_no == BP_VECTOR)
++			{
++				/*
++				 *  Deliver the event to the introspection handler,
++				 *  instead of exiting to QEMU.
++				 */
++				kvm_deliver_trap_event(vcpu, ex_no);
++
++				return 1;
++			}
++		}
++
+ 		break;
+ 	default:
+ 		kvm_run->exit_reason = KVM_EXIT_EXCEPTION;
+@@ -4913,18 +4945,25 @@ static int handle_cr(struct kvm_vcpu *vc
+ 		trace_kvm_cr_write(cr, val);
+ 		switch (cr) {
+ 		case 0:
++			kvm_deliver_cr_write_event(vcpu, 0, val);
+ 			err = handle_set_cr0(vcpu, val);
++			/* These events are delivered here so that we know they're coming from the guest
++			 * kvm_set_cr0() would work as well, but we'd get events when it's set via ioctl.
++			 */
+ 			return kvm_complete_insn_gp(vcpu, err);
+ 		case 3:
+-			WARN_ON_ONCE(enable_unrestricted_guest);
++			/* WARN_ON_ONCE(enable_unrestricted_guest); */
++			kvm_deliver_cr_write_event(vcpu, 3, val);
+ 			err = kvm_set_cr3(vcpu, val);
+ 			return kvm_complete_insn_gp(vcpu, err);
+ 		case 4:
++			kvm_deliver_cr_write_event(vcpu, 4, val);
+ 			err = handle_set_cr4(vcpu, val);
+ 			return kvm_complete_insn_gp(vcpu, err);
+ 		case 8: {
+ 				u8 cr8_prev = kvm_get_cr8(vcpu);
+ 				u8 cr8 = (u8)val;
++				kvm_deliver_cr_write_event(vcpu, 8, val);
+ 				err = kvm_set_cr8(vcpu, cr8);
+ 				ret = kvm_complete_insn_gp(vcpu, err);
+ 				if (lapic_in_kernel(vcpu))
+@@ -4953,11 +4992,13 @@ static int handle_cr(struct kvm_vcpu *vc
+ 			val = kvm_read_cr3(vcpu);
+ 			kvm_register_write(vcpu, reg, val);
+ 			trace_kvm_cr_read(cr, val);
++			kvm_deliver_cr_read_event(vcpu, 3, val);
+ 			return kvm_skip_emulated_instruction(vcpu);
+ 		case 8:
+ 			val = kvm_get_cr8(vcpu);
+ 			kvm_register_write(vcpu, reg, val);
+ 			trace_kvm_cr_read(cr, val);
++			kvm_deliver_cr_read_event(vcpu, 8, val);
+ 			return kvm_skip_emulated_instruction(vcpu);
+ 		}
+ 		break;
+@@ -5068,6 +5109,16 @@ static void vmx_set_dr7(struct kvm_vcpu
+ 
+ static int handle_cpuid(struct kvm_vcpu *vcpu)
+ {
++	/*
++	 * It was difficult to find an event that is triggered on a reboot only once.
++	 * After we see RIP jumped to 0xFFF0, we wait for a CPUID instruction to
++	 * detect a "reboot" event.
++	 */
++	if (unlikely(vcpu->reboot_pending)) {
++		if (vcpu->vcpu_id == 0)
++			kvm_deliver_reboot_event(vcpu);
++		vcpu->reboot_pending = false;
++	}
+ 	return kvm_emulate_cpuid(vcpu);
+ }
+ 
+@@ -5283,6 +5334,7 @@ static int handle_ept_violation(struct k
+ 	       PFERR_GUEST_FINAL_MASK : PFERR_GUEST_PAGE_MASK;
+ 
+ 	vcpu->arch.exit_qualification = exit_qualification;
++
+ 	return kvm_mmu_page_fault(vcpu, gpa, error_code, NULL, 0);
+ }
+ 
+@@ -5470,6 +5522,11 @@ static int handle_invalid_op(struct kvm_
+ 
+ static int handle_monitor_trap(struct kvm_vcpu *vcpu)
+ {
++	/*
++	* If introspection is enabled, deliver the event.
++	*/
++	if(vcpu->introspection_mm)
++		kvm_deliver_monitor_trap_flag_event(vcpu);
+ 	return 1;
+ }
+ 
+@@ -6831,7 +6888,8 @@ static struct kvm_vcpu *vmx_create_vcpu(
+ 	vmx_disable_intercept_for_msr(msr_bitmap, MSR_FS_BASE, MSR_TYPE_RW);
+ 	vmx_disable_intercept_for_msr(msr_bitmap, MSR_GS_BASE, MSR_TYPE_RW);
+ 	vmx_disable_intercept_for_msr(msr_bitmap, MSR_KERNEL_GS_BASE, MSR_TYPE_RW);
+-	vmx_disable_intercept_for_msr(msr_bitmap, MSR_IA32_SYSENTER_CS, MSR_TYPE_RW);
++	/* IntroVirt Patch */
++	/* vmx_disable_intercept_for_msr(msr_bitmap, MSR_IA32_SYSENTER_CS, MSR_TYPE_RW); */
+ 	vmx_disable_intercept_for_msr(msr_bitmap, MSR_IA32_SYSENTER_ESP, MSR_TYPE_RW);
+ 	vmx_disable_intercept_for_msr(msr_bitmap, MSR_IA32_SYSENTER_EIP, MSR_TYPE_RW);
+ 	if (kvm_cstate_in_guest(kvm)) {
+@@ -7762,7 +7820,9 @@ static __init int hardware_setup(void)
+ 	if (!cpu_has_vmx_tpr_shadow())
+ 		kvm_x86_ops->update_cr8_intercept = NULL;
+ 
+-	if (enable_ept && !cpu_has_vmx_ept_2m_page())
++	/* IntroVirt hack */
++	/* We want more granularity */
++	if ((enable_ept && !cpu_has_vmx_ept_2m_page()) || true)
+ 		kvm_disable_largepages();
+ 
+ #if IS_ENABLED(CONFIG_HYPERV)
+@@ -7876,6 +7936,102 @@ static __exit void hardware_unsetup(void
+ 	free_kvm_area();
+ }
+ 
++int vmx_set_cr_monitor(struct kvm_vcpu *vcpu, int cr, int mode)
++{
++	struct vcpu_vmx *vmx = to_vmx(vcpu);
++
++	if (unlikely(mode > 0x3)) {
++		printk ("Invalid mode 0x%X passed to KVM_SET_CR_MONITOR\n", mode);
++		return -EINVAL;
++	}
++
++	switch (cr)
++	{
++		// We can only monitor writes to CR 0 and 4
++		case 0:
++		case 4:
++			if (mode & KVM_MONITOR_CR_READ) {
++				printk(KERN_WARNING "Tried to enable CR%d read monitoring, but unsupported\n", cr);
++				return -ENODEV;
++			}
++			break;
++		case 3:
++			exec_controls_clearbit(vmx, CPU_BASED_CR3_LOAD_EXITING | CPU_BASED_CR3_STORE_EXITING);
++
++			if (mode & KVM_MONITOR_CR_WRITE)
++				exec_controls_setbit(vmx, CPU_BASED_CR3_LOAD_EXITING);
++			if (mode & KVM_MONITOR_CR_READ)
++				exec_controls_setbit(vmx, CPU_BASED_CR3_STORE_EXITING);
++			break;
++		case 8:
++			exec_controls_clearbit(vmx, CPU_BASED_CR8_LOAD_EXITING | CPU_BASED_CR8_STORE_EXITING);
++
++			if (mode & KVM_MONITOR_CR_WRITE)
++				exec_controls_setbit(vmx, CPU_BASED_CR8_LOAD_EXITING);
++			if (mode & KVM_MONITOR_CR_READ)
++				exec_controls_setbit(vmx, CPU_BASED_CR8_STORE_EXITING);
++			break;
++		default:
++			return -ENODEV;
++	}
++
++	// Update the VCPU mask, checked by event delivery
++	vcpu->cr_monitor_mask &= ~(0x3 << (cr * 2));
++	vcpu->cr_monitor_mask |= (mode << (cr * 2));
++
++	if (!enable_ept)
++	{
++		// Without EPT, we always need CR3 intercepts
++		exec_controls_setbit(vmx, CPU_BASED_CR3_LOAD_EXITING | CPU_BASED_CR3_STORE_EXITING);
++	}
++
++	return 0;
++}
++
++int vmx_set_monitor_trap_flag(struct kvm_vcpu *vcpu, bool enabled) {
++	struct vcpu_vmx *vmx = to_vmx(vcpu);
++
++	if (!cpu_has_monitor_trap_flag())
++		return -ENODEV;
++
++	vcpu->monitor_trap_flag = enabled;
++
++	if (enabled)
++		exec_controls_setbit(vmx, CPU_BASED_MONITOR_TRAP_FLAG);
++	else
++		exec_controls_clearbit(vmx, CPU_BASED_MONITOR_TRAP_FLAG);
++	return 0;
++}
++
++int vmx_set_invlpg_monitor(struct kvm_vcpu *vcpu, bool enabled) {
++	struct vcpu_vmx *vmx = to_vmx(vcpu);
++
++	/* Without ept, we always need it set */
++	if (enabled || !enable_ept)
++		exec_controls_setbit(vmx, CPU_BASED_INVLPG_EXITING);
++	else
++		exec_controls_clearbit(vmx, CPU_BASED_INVLPG_EXITING);
++
++	vcpu->invlpg_hook = enabled;
++
++	return 0;
++}
++
++bool vmx_hap_permissions_allowed(uint16_t perms) {
++	if ((perms & PT_PRESENT_MASK) == 0)
++	{
++		if ((perms & PT_WRITABLE_MASK))
++			// Not allowed to do write-only or write+execute.
++			// You have to have read for those.
++			return false;
++		else if ((perms & PT_USER_MASK))
++			// Execute only. This is only supported if a feature bit is set.
++			if (!cpu_has_vmx_ept_execute_only())
++				return false;
++	}
++	return true;
++}
++
+ static struct kvm_x86_ops vmx_x86_ops __ro_after_init = {
+ 	.cpu_has_kvm_support = cpu_has_kvm_support,
+ 	.disabled_by_bios = vmx_disabled_by_bios,
+@@ -7900,6 +8056,7 @@ static struct kvm_x86_ops vmx_x86_ops __
+ 	.vcpu_put = vmx_vcpu_put,
+ 
+ 	.update_bp_intercept = update_exception_bitmap,
++	.update_syscall_intercept = update_exception_bitmap,
+ 	.get_msr_feature = vmx_get_msr_feature,
+ 	.get_msr = vmx_get_msr,
+ 	.set_msr = vmx_set_msr,
+@@ -8028,6 +8185,12 @@ static struct kvm_x86_ops vmx_x86_ops __
+ 	.nested_get_evmcs_version = NULL,
+ 	.need_emulation_on_page_fault = vmx_need_emulation_on_page_fault,
+ 	.apic_init_signal_blocked = vmx_apic_init_signal_blocked,
++
++	/* IntroVirt patch */
++	.set_cr_monitor = vmx_set_cr_monitor,
++	.set_monitor_trap_flag = vmx_set_monitor_trap_flag,
++	.set_invlpg_monitor = vmx_set_invlpg_monitor,
++	.hap_permissions_allowed = vmx_hap_permissions_allowed
+ };
+ 
+ static void vmx_cleanup_l1d_flush(void)
+Index: kvm-introvirt/kernel/arch/x86/kvm/x86.c
+===================================================================
+--- kvm-introvirt.orig/kernel/arch/x86/kvm/x86.c
++++ kvm-introvirt/kernel/arch/x86/kvm/x86.c
+@@ -108,6 +108,7 @@ static void enter_smm(struct kvm_vcpu *v
+ static void __kvm_set_rflags(struct kvm_vcpu *vcpu, unsigned long rflags);
+ static void store_regs(struct kvm_vcpu *vcpu);
+ static int sync_regs(struct kvm_vcpu *vcpu);
++void kvm_arch_clear_mem_access(struct kvm* kvm);
+ 
+ struct kvm_x86_ops *kvm_x86_ops __read_mostly;
+ EXPORT_SYMBOL_GPL(kvm_x86_ops);
+@@ -161,6 +162,9 @@ module_param(force_emulation_prefix, boo
+ int __read_mostly pi_inject_timer = -1;
+ module_param(pi_inject_timer, bint, S_IRUGO | S_IWUSR);
+ 
++static void init_emulate_ctxt(struct kvm_vcpu *vcpu);
++static void toggle_interruptibility(struct kvm_vcpu *vcpu, u32 mask);
++
+ #define KVM_NR_SHARED_MSRS 16
+ 
+ struct kvm_shared_msrs_global {
+@@ -1538,6 +1542,16 @@ static int __kvm_set_msr(struct kvm_vcpu
+ 		 * invokes 64-bit SYSENTER.
+ 		 */
+ 		data = get_canonical(data, vcpu_virt_addr_bits(vcpu));
++		break;
++	case MSR_IA32_SYSENTER_CS:
++		/*
++		 * Any time there's a write to this MSR, update the shadow.
++		 * Also, switch it to 0 if we are intercepting system calls.
++		 */
++	    vcpu->shadow_msr_ia32_sysenter_cs = data;
++	    if (vcpu->syscall_hook_enabled)
++	        data = 0;
++	    break;
+ 	}
+ 
+ 	msr.data = data;
+@@ -3335,7 +3349,8 @@ int kvm_vm_ioctl_check_extension(struct
+ 	case KVM_CAP_GET_MSR_FEATURES:
+ 	case KVM_CAP_MSR_PLATFORM_INFO:
+ 	case KVM_CAP_EXCEPTION_PAYLOAD:
+-		r = 1;
++	case KVM_CAP_INTROSPECTION:
++		r = KVM_INTROSPECTION_API_VERSION;
+ 		break;
+ 	case KVM_CAP_SYNC_REGS:
+ 		r = KVM_SYNC_X86_VALID_FIELDS;
+@@ -4202,6 +4217,26 @@ static int kvm_vcpu_ioctl_enable_cap(str
+ 	}
+ }
+ 
++static int kvm_set_syscall_hook(struct kvm_vcpu *vcpu, bool enabled)
++{
++	int rc = 0;
++	if (vcpu->syscall_hook_enabled == enabled)
++		goto done;
++
++    vcpu->syscall_hook_enabled = enabled;
++
++	// Update the efer using the new 'syscall_hook_enabled' setting.
++	kvm_x86_ops->set_efer(vcpu, vcpu->arch.efer);
++
++	// Update MSR_IA32_SYSENTER_CS
++	kvm_set_msr(vcpu, MSR_IA32_SYSENTER_CS, vcpu->shadow_msr_ia32_sysenter_cs);
++
++	// Turn on or off #GP intercept
++	kvm_x86_ops->update_syscall_intercept(vcpu);
++done:
++	return rc;
++}
++
+ long kvm_arch_vcpu_ioctl(struct file *filp,
+ 			 unsigned int ioctl, unsigned long arg)
+ {
+@@ -4573,6 +4608,107 @@ long kvm_arch_vcpu_ioctl(struct file *fi
+ 		r = 0;
+ 		break;
+ 	}
++	case KVM_SET_CR_MONITOR: {
++		struct kvm_cr_monitor cr_mon;
++
++		r = -EFAULT;
++		if (copy_from_user(&cr_mon, argp, sizeof(cr_mon)))
++			goto out;
++
++		r = kvm_x86_ops->set_cr_monitor(vcpu, cr_mon.cr, cr_mon.mode);
++		break;
++	}
++	case KVM_SET_INVLPG_HOOK: {
++		r = kvm_x86_ops->set_invlpg_monitor(vcpu, arg);
++		break;
++	}
++	case KVM_SET_MONITOR_TRAP_FLAG: {
++		r = kvm_x86_ops->set_monitor_trap_flag(vcpu, arg);
++		break;
++	}
++	case KVM_SET_SYSCALL_HOOK: {
++		r = kvm_set_syscall_hook(vcpu, arg);
++		break;
++	}
++	case KVM_SET_VMCALL_HOOK: {
++		r = 0;
++		vcpu->vmcall_hook_enabled = (arg != 0);
++		break;
++	}
++	case KVM_INJECT_TRAP: {
++		struct kvm_inject_trap trap;
++		r = -EFAULT;
++		if (copy_from_user(&trap, argp, sizeof(trap)))
++			goto out;
++
++		if(trap.vector == PF_VECTOR) {
++			vcpu->arch.cr2 = trap.cr2;
++		}
++		kvm_multiple_exception(vcpu, trap.vector, trap.has_error, trap.error_code, false, 0, false);
++		r = 0;
++
++		break;
++	}
++	case KVM_VCPU_INJECT_SYSENTER:
++	case KVM_VCPU_INJECT_SYSCALL: {
++		struct x86_emulate_ctxt *ctxt = &vcpu->arch.emulate_ctxt;
++		uint8_t insn[8];
++		int insn_len = 0;
++		unsigned long rflags = kvm_x86_ops->get_rflags(vcpu);
++		struct kvm_segment cs;
++
++		// Check CS for long mode
++		kvm_get_segment(vcpu, &cs, VCPU_SREG_CS);
++
++		init_emulate_ctxt(vcpu);
++
++		ctxt->interruptibility = 0;
++		ctxt->have_exception = false;
++		ctxt->exception.vector = -1;
++		ctxt->perm_ok = false;
++
++		if (ioctl == KVM_VCPU_INJECT_SYSCALL)
++		{
++			// SYSCALL
++			if (cs.l)
++				insn[insn_len++] = 0x48;
++			insn[insn_len++] = 0x0F;
++			insn[insn_len++] = 0x05;
++		} else {
++			// SYSENTER
++			if (cs.l)
++				insn[insn_len++] = 0x48;
++			insn[insn_len++] = 0x0F;
++			insn[insn_len++] = 0x34;
++		}
++
++		r = x86_decode_insn(ctxt, insn, insn_len);
++		if (r != EMULATION_OK) {
++			printk(KERN_WARNING "x86_decode_insn failed: %d\n", r);
++			break;
++		}
++
++		r = x86_emulate_insn(ctxt);
++		if (r != EMULATION_OK)
++			break;
++
++		kvm_rip_write(vcpu, ctxt->eip);
++		__kvm_set_rflags(vcpu, ctxt->eflags);
++		emulator_writeback_register_cache(ctxt);
++		vcpu->arch.emulate_regs_need_sync_to_vcpu = false;
++		toggle_interruptibility(vcpu, ctxt->interruptibility);
++
++		/*
++		 * For STI, interrupts are shadowed; so KVM_REQ_EVENT will
++		 * do nothing, and it will be requested again as soon as
++		 * the shadow expires.  But we still need to check here,
++		 * because POPF has no interrupt shadow.
++		 */
++		if (unlikely((ctxt->eflags & ~rflags) & X86_EFLAGS_IF))
++			kvm_make_request(KVM_REQ_EVENT, vcpu);
++
++		break;
++	}
+ 	default:
+ 		r = -EINVAL;
+ 	}
+@@ -5225,6 +5361,83 @@ set_pit2_out:
+ 	case KVM_SET_PMU_EVENT_FILTER:
+ 		r = kvm_vm_ioctl_set_pmu_event_filter(kvm, argp);
+ 		break;
++	case KVM_SET_MEM_ACCESS_ENABLED: {
++		kvm->mem_event_enabled = arg;
++
++		/* TODO: Check if EPT is enabled; it's the only one we support right now. */
++
++		r = 0;
++		if (!kvm->mem_event_enabled) {
++			/* Remove all entries */
++			kvm_arch_clear_mem_access(kvm);
++		}
++		break;
++	}
++	case KVM_SET_MEM_ACCESS: {
++		struct kvm_ept_permissions perms;
++		struct kvm_vcpu *vcpu = kvm->vcpus[0];
++		struct mem_access_entry * entry;
++
++		r = -EINVAL;
++		if (unlikely(!kvm->mem_event_enabled))
++			goto out;
++
++		r = -EFAULT;
++		if (copy_from_user(&perms, argp, sizeof(perms)))
++			goto out;
++
++		mutex_lock(&kvm->mem_access_table.mutex);
++
++		// Search for the entry
++		hash_for_each_possible(kvm->mem_access_table.table, entry, node, perms.gfn)
++		{
++			if (entry->gfn == perms.gfn)
++			{
++				/* This entry already exists */
++				/* Set the requested permissions */
++				r = vcpu->arch.mmu->set_pte_perms(vcpu, perms.gfn, perms.perms, NULL);
++				if (r)
++					goto set_ept_out;
++
++				if (perms.perms == entry->original_perms)
++				{
++					/* Setting back to original permissions, just remove the entry */
++					hash_del(&entry->node);
++					kfree(entry);
++					r = 0;
++				}
++				goto set_ept_out;
++			}
++		}
++
++		r = 0;
++		/* Don't bother adding an entry when setting full permissions */
++		if (perms.perms != (PT_USER_MASK|PT_WRITABLE_MASK|PT_PRESENT_MASK))
++		{
++			/* We didn't find an existing entry, add a new one. */
++			r = -ENOMEM;
++			entry = kmalloc(sizeof(struct mem_access_entry), GFP_KERNEL);
++			if(!entry)
++				goto set_ept_out;
++			entry->gfn = perms.gfn;
++
++			/* Update the PTE */
++			r = vcpu->arch.mmu->set_pte_perms(vcpu, perms.gfn, perms.perms, &entry->original_perms);
++			if (r)
++			{
++				// Failed to set hardware, so free the entry
++				kfree(entry);
++				goto set_ept_out;
++			}
++
++			/* Add the entry to the table */
++			hash_add(kvm->mem_access_table.table, &entry->node, perms.gfn);
++		}
++set_ept_out:
++		mutex_unlock(&kvm->mem_access_table.mutex);
++
++		break;
++	}
+ 	default:
+ 		r = -ENOTTY;
+ 	}
+@@ -6744,6 +6957,8 @@ int x86_emulate_instruction(struct kvm_v
+ 	struct x86_emulate_ctxt *ctxt = &vcpu->arch.emulate_ctxt;
+ 	bool writeback = true;
+ 	bool write_fault_to_spt = vcpu->arch.write_fault_to_shadow_pgtable;
++	bool sysret = false;
++	bool sysexit = false;
+ 
+ 	vcpu->arch.l1tf_flush_l1d = true;
+ 
+@@ -6802,10 +7017,54 @@ int x86_emulate_instruction(struct kvm_v
+ 		}
+ 	}
+ 
+-	if ((emulation_type & EMULTYPE_VMWARE_GP) &&
+-	    !is_vmware_backdoor_opcode(ctxt)) {
+-		kvm_queue_exception_e(vcpu, GP_VECTOR, 0);
+-		return 1;
++	if (ctxt->ud) {
++		int i = 0;
++
++		if(ctxt->fetch.data[0] == 0x48)
++			++i; // Skip over the REX.W prefix
++
++		if(ctxt->fetch.data[i] == 0x0F) {
++			switch(ctxt->fetch.data[i + 1]) {
++			case 0x05: { // SYSCALL
++				const u64 original_rip = kvm_rip_read(vcpu);
++				kvm_deliver_syscall_event(vcpu, original_rip + ctxt->opcode_len);
++				if (kvm_rip_read(vcpu) != original_rip || vcpu->arch.exception.pending)
++				    return 1;
++				break;
++			}
++			case 0x07: // SYSRET
++				sysret = true;
++				break;
++			}
++		}
++	} else if (emulation_type & EMULTYPE_VMWARE_GP) {
++		int i = 0;
++		bool handled = false;
++
++		if(ctxt->fetch.data[0] == 0x48)
++			++i; // Skip over the REX.W prefix
++
++		if(ctxt->fetch.data[i] == 0x0F) {
++			switch(ctxt->fetch.data[i + 1]) {
++			case 0x34: { /* SYSENTER */
++				const u64 original_rip = kvm_rip_read(vcpu);
++				kvm_deliver_sysenter_event(vcpu, original_rip + ctxt->opcode_len);
++				if (kvm_rip_read(vcpu) != original_rip || vcpu->arch.exception.pending)
++				    return 1;
++				handled = true;
++			    break;
++			}
++	        case 0x35: /* SYSEXIT */
++	            sysexit = true;
++				handled = true;
++	            break;
++			}
++		}
++
++		if (!handled && !is_vmware_backdoor_opcode(ctxt)) {
++			kvm_queue_exception_e(vcpu, GP_VECTOR, 0);
++			return 1;
++		}
+ 	}
+ 
+ 	/*
+@@ -6828,6 +7087,7 @@ int x86_emulate_instruction(struct kvm_v
+ 	if (vcpu->arch.emulate_regs_need_sync_from_vcpu) {
+ 		vcpu->arch.emulate_regs_need_sync_from_vcpu = false;
+ 		emulator_invalidate_register_cache(ctxt);
++
+ 	}
+ 
+ restart:
+@@ -6895,6 +7155,12 @@ restart:
+ 	} else
+ 		vcpu->arch.emulate_regs_need_sync_to_vcpu = true;
+ 
++	if (sysret)
++		kvm_deliver_sysret_event(vcpu);
++	else if (sysexit)
++		kvm_deliver_sysexit_event(vcpu);
++
++
+ 	return r;
+ }
+ 
+@@ -7391,6 +7657,40 @@ void kvm_arch_exit(void)
+ 	kmem_cache_destroy(x86_fpu_cache);
+ }
+ 
++void kvm_arch_clear_mem_access(struct kvm* kvm) {
++	struct kvm_vcpu * vcpu = kvm->vcpus[0];
++	struct mem_access_entry * entry;
++	struct hlist_node * tmp;
++	int bkt;
++
++	/* Remove all entries */
++	mutex_lock(&kvm->mem_access_table.mutex);
++	hash_for_each_safe(kvm->mem_access_table.table, bkt, tmp, entry, node)
++	{
++		/* Set the mem_access values back to normal */
++		vcpu->arch.mmu->set_pte_perms(vcpu, entry->gfn, entry->original_perms, NULL);
++
++		hash_del(&entry->node);
++		kfree(entry);
++	}
++	mutex_unlock(&kvm->mem_access_table.mutex);
++}
++
++void kvm_arch_introspection_cleanup(struct kvm_vcpu *vcpu)
++{
++	int i;
++	for (i=0; i<=8; ++i) {
++		kvm_x86_ops->set_cr_monitor(vcpu, i, 0);
++	}
++	kvm_arch_clear_mem_access(vcpu->kvm);
++
++	kvm_set_syscall_hook(vcpu, 0);
++	kvm_x86_ops->set_monitor_trap_flag(vcpu, 0);
++	kvm_x86_ops->set_invlpg_monitor(vcpu, 0);
++	vcpu->kvm->mem_event_enabled = 0;
++	vcpu->vmcall_hook_enabled = 0;
++}
++
+ int kvm_vcpu_halt(struct kvm_vcpu *vcpu)
+ {
+ 	++vcpu->stat.halt_exits;
+@@ -7499,10 +7799,22 @@ int kvm_emulate_hypercall(struct kvm_vcp
+ 	unsigned long nr, a0, a1, a2, a3, ret;
+ 	int op_64_bit;
+ 
++	nr = kvm_rax_read(vcpu);
++	if(nr == 0xFACE)
++	{
++		const uint64_t original_rip = kvm_rip_read(vcpu);
++		if (vcpu->vmcall_hook_enabled)
++			kvm_deliver_vmcall_event(vcpu);
++
++		if (original_rip == kvm_rip_read(vcpu))
++			kvm_skip_emulated_instruction(vcpu);
++
++		return 0;
++	}
++
+ 	if (kvm_hv_hypercall_enabled(vcpu->kvm))
+ 		return kvm_hv_hypercall(vcpu);
+ 
+-	nr = kvm_rax_read(vcpu);
+ 	a0 = kvm_rbx_read(vcpu);
+ 	a1 = kvm_rcx_read(vcpu);
+ 	a2 = kvm_rdx_read(vcpu);
+@@ -8447,12 +8759,33 @@ static int vcpu_run(struct kvm_vcpu *vcp
+ 	vcpu->arch.l1tf_flush_l1d = true;
+ 
+ 	for (;;) {
++
+ 		if (kvm_vcpu_running(vcpu)) {
+ 			r = vcpu_enter_guest(vcpu);
+ 		} else {
+ 			r = vcpu_block(kvm, vcpu);
+ 		}
+ 
++		/*
++		 * We shouldn't get here during an event
++		 * The vcpu will be blocked in event delivery
++		 */
++		if (atomic_read(&vcpu->pause_count)) {
++			// Release the vcpu
++			vcpu_put(vcpu);
++			mutex_unlock(&vcpu->mutex);
++
++			/* Wait until we're resumed */
++			wait_event(vcpu->pause_wait_queue,
++				atomic_read(&vcpu->pause_count) == 0);
++
++			/* Retake the vcpu */
++			if (mutex_lock_killable(&vcpu->mutex))
++				return -EINTR;
++
++			vcpu_load(vcpu);
++		}
++
+ 		if (r <= 0)
+ 			break;
+ 
+@@ -8957,6 +9290,12 @@ static int __set_sregs(struct kvm_vcpu *
+ 	kvm_x86_ops->set_cr0(vcpu, sregs->cr0);
+ 	vcpu->arch.cr0 = sregs->cr0;
+ 
++	if (kvm_rip_read(vcpu) == 0xfff0) {
++		vcpu->reboot_pending = true;
++	} else {
++		vcpu->reboot_pending = false;
++	}
++
+ 	mmu_reset_needed |= kvm_read_cr4(vcpu) != sregs->cr4;
+ 	cpuid_update_needed |= ((kvm_read_cr4(vcpu) ^ sregs->cr4) &
+ 				(X86_CR4_OSXSAVE | X86_CR4_PKE));
+@@ -9204,6 +9543,7 @@ void kvm_arch_vcpu_free(struct kvm_vcpu
+ 	kvmclock_reset(vcpu);
+ 
+ 	kvm_x86_ops->vcpu_free(vcpu);
++
+ 	free_cpumask_var(wbinvd_dirty_mask);
+ }
+ 
+@@ -10452,6 +10792,207 @@ int kvm_spec_ctrl_test_value(u64 value)
+ }
+ EXPORT_SYMBOL_GPL(kvm_spec_ctrl_test_value);
+ 
++void kvm_deliver_introspection_event(struct kvm_vcpu* vcpu,
++		struct kvm_introspection_event* event)
++{
++	if (!vcpu->introspection_mm)
++		return;
++
++	/*
++	 * Fill out the structure with registers and information
++	 */
++	event->event_id = atomic64_inc_return(&vcpu->kvm->event_id);
++	event->vcpu_id = vcpu->vcpu_id;
++    if (event->event_type != KVM_EVENT_SHUTDOWN) {
++	    __get_regs(vcpu, &event->regs);
++    	__get_sregs(vcpu, &event->sregs);
++    	kvm_vcpu_ioctl_x86_get_debugregs(vcpu, &event->debugregs);
++    }
++
++	mutex_lock(&vcpu->introspection_event_mutex);
++	if (unlikely(vcpu->introspection_event != NULL))
++		printk(KERN_ERR "kvm: Overwriting existing event %llu", event->event_id);
++
++	/*
++	 * Set the introspection event
++	 */
++	vcpu->introspection_event = event;
++	vcpu->introspection_event_pending_completion = true;
++	mutex_unlock(&vcpu->introspection_event_mutex);
++
++	/*
++	 * Release the vcpu while the event is being delivered.
++	 * If we don't do this, then ioctls will deadlock.
++	 */
++	if (likely(event->event_type != KVM_EVENT_SHUTDOWN)) {
++		atomic_inc(&vcpu->pause_count);
++		vcpu_put(vcpu);
++		mutex_unlock(&vcpu->mutex);
++	}
++
++	/*
++	 * Wake up the userland call to poll()
++	 */
++	wake_up(&vcpu->introspection_wait_queue);
++
++	/*
++	 * Block until KVM_COMPLETE_INTROSPECTION_EVENT
++	 */
++	wait_event(vcpu->introspection_event_completed_wait_queue,
++		vcpu->introspection_event_pending_completion == false);
++
++	/*
++	* If we're still being introspected, decrement the pause count.
++	* Then retake the vcpu and continue on about our business.
++	*/
++	if (likely(event->event_type != KVM_EVENT_SHUTDOWN)) {
++		if (vcpu->introspection_mm) {
++			kvm_vcpu_unpause(vcpu);
++		}
++
++		if (mutex_lock_killable(&vcpu->mutex))
++			return;
++		vcpu_load(vcpu);
++	}
++}
++
++void kvm_deliver_invlpg_event(struct kvm_vcpu *vcpu, uint64_t gva) {
++	if (vcpu->invlpg_hook) {
++		struct kvm_introspection_event event;
++		event.event_type = KVM_EVENT_INVLPG;
++		event.invlpg.gva = gva;
++		kvm_deliver_introspection_event(vcpu, &event);
++	}
++}
++
++void kvm_deliver_mem_event(struct kvm_vcpu *vcpu, uint64_t gpa, u32 error_code) {
++	if (kvm_is_mem_event_enabled(vcpu->kvm)) {
++		struct kvm_introspection_event event;
++		event.event_type = KVM_EVENT_MEM_ACCESS;
++		event.mem_event.gpa = gpa;
++		event.mem_event.error_code = error_code;
++		kvm_deliver_introspection_event(vcpu, &event);
++	}
++}
++
++void kvm_deliver_cr_read_event(struct kvm_vcpu *vcpu, int cr, u64 val)
++{
++	if (kvm_is_cr_hooked(vcpu, cr, KVM_MONITOR_CR_READ))
++	{
++		struct kvm_introspection_event event;
++		event.event_type = KVM_EVENT_CR_READ;
++		event.cr_access.cr = cr;
++		event.cr_access.value = val;
++		kvm_deliver_introspection_event(vcpu, &event);
++	}
++}
++EXPORT_SYMBOL(kvm_deliver_cr_read_event);
++
++void kvm_deliver_cr_write_event(struct kvm_vcpu *vcpu, int cr, u64 val)
++{
++	if (kvm_is_cr_hooked(vcpu, cr, KVM_MONITOR_CR_WRITE))
++	{
++		struct kvm_introspection_event event;
++		event.event_type = KVM_EVENT_CR_WRITE;
++		event.cr_access.cr = cr;
++		event.cr_access.value = val;
++		kvm_deliver_introspection_event(vcpu, &event);
++	}
++}
++EXPORT_SYMBOL(kvm_deliver_cr_write_event);
++
++void kvm_deliver_syscall_event(struct kvm_vcpu *vcpu, u64 return_address)
++{
++	if (vcpu->syscall_hook_enabled)
++	{
++		struct kvm_introspection_event event;
++		event.event_type = KVM_EVENT_FAST_SYSCALL;
++		event.system_call.type = KVM_EVENT_SYSTEM_CALL_TYPE_SYSCALL;
++		event.system_call.return_address = return_address;
++		kvm_deliver_introspection_event(vcpu, &event);
++	}
++}
++EXPORT_SYMBOL(kvm_deliver_syscall_event);
++
++void kvm_deliver_sysenter_event(struct kvm_vcpu *vcpu, u64 return_address)
++{
++	if (vcpu->syscall_hook_enabled)
++	{
++		struct kvm_introspection_event event;
++		event.event_type = KVM_EVENT_FAST_SYSCALL;
++		event.system_call.type = KVM_EVENT_SYSTEM_CALL_TYPE_SYSENTER;
++		event.system_call.return_address = return_address;
++		kvm_deliver_introspection_event(vcpu, &event);
++	}
++}
++EXPORT_SYMBOL(kvm_deliver_sysenter_event);
++
++void kvm_deliver_sysret_event(struct kvm_vcpu *vcpu)
++{
++	struct kvm_introspection_event event;
++	if (vcpu->syscall_hook_enabled)
++	{
++		event.event_type = KVM_EVENT_FAST_SYSCALL_RET;
++		event.system_call_ret.type = KVM_EVENT_FAST_SYSCALL_RET;
++		kvm_deliver_introspection_event(vcpu, &event);
++	}
++}
++EXPORT_SYMBOL(kvm_deliver_sysret_event);
++
++void kvm_deliver_sysexit_event(struct kvm_vcpu *vcpu)
++{
++	struct kvm_introspection_event event;
++	if (vcpu->syscall_hook_enabled)
++	{
++		event.event_type = KVM_EVENT_FAST_SYSCALL_RET;
++		event.system_call_ret.type = KVM_EVENT_SYSTEM_CALL_RET_TYPE_SYSEXIT;
++		kvm_deliver_introspection_event(vcpu, &event);
++	}
++}
++EXPORT_SYMBOL(kvm_deliver_sysexit_event);
++
++void kvm_deliver_vmcall_event(struct kvm_vcpu *vcpu)
++{
++	struct kvm_introspection_event event;
++	event.event_type = KVM_EVENT_HYPERCALL;
++	kvm_deliver_introspection_event(vcpu, &event);
++}
++EXPORT_SYMBOL(kvm_deliver_vmcall_event);
++
++void kvm_deliver_trap_event(struct kvm_vcpu *vcpu, int vector)
++{
++	struct kvm_introspection_event event;
++	event.event_type = KVM_EVENT_EXCEPTION;
++	event.trap.vector = vector;
++	kvm_deliver_introspection_event(vcpu, &event);
++}
++EXPORT_SYMBOL(kvm_deliver_trap_event);
++
++void kvm_deliver_monitor_trap_flag_event(struct kvm_vcpu *vcpu)
++{
++	struct kvm_introspection_event event;
++	event.event_type = KVM_EVENT_SINGLE_STEP;
++	kvm_deliver_introspection_event(vcpu, &event);
++}
++EXPORT_SYMBOL(kvm_deliver_monitor_trap_flag_event);
++
++void kvm_deliver_reboot_event(struct kvm_vcpu *vcpu)
++{
++	struct kvm_introspection_event event;
++	event.event_type = KVM_EVENT_REBOOT;
++	kvm_deliver_introspection_event(vcpu, &event);
++}
++EXPORT_SYMBOL(kvm_deliver_reboot_event);
++
++void kvm_deliver_shutdown_event(struct kvm_vcpu *vcpu)
++{
++	struct kvm_introspection_event event;
++	event.event_type = KVM_EVENT_SHUTDOWN;
++	kvm_deliver_introspection_event(vcpu, &event);
++}
++EXPORT_SYMBOL(kvm_deliver_shutdown_event);
++
++
+ EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_exit);
+ EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_fast_mmio);
+ EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_inj_virq);
+Index: kvm-introvirt/kernel/arch/x86/kvm/x86.h
+===================================================================
+--- kvm-introvirt.orig/kernel/arch/x86/kvm/x86.h
++++ kvm-introvirt/kernel/arch/x86/kvm/x86.h
+@@ -289,6 +289,29 @@ bool kvm_vector_hashing_enabled(void);
+ int x86_emulate_instruction(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
+ 			    int emulation_type, void *insn, int insn_len);
+ 
++static inline int kvm_is_cr_hooked(struct kvm_vcpu *vcpu, int cr, int mode)
++{
++	return (((vcpu->cr_monitor_mask) >> (cr * 2)) & mode) != 0;
++}
++
++static inline int kvm_is_mem_event_enabled(struct kvm *kvm)
++{
++	return kvm->mem_event_enabled;
++}
++
++void kvm_deliver_cr_read_event(struct kvm_vcpu *vcpu, int cr, u64 val);
++void kvm_deliver_cr_write_event(struct kvm_vcpu *vcpu, int cr, u64 val);
++void kvm_deliver_syscall_event(struct kvm_vcpu *vcpu, u64 return_address);
++void kvm_deliver_sysenter_event(struct kvm_vcpu *vcpu, u64 return_address);
++void kvm_deliver_sysret_event(struct kvm_vcpu *vcpu);
++void kvm_deliver_sysexit_event(struct kvm_vcpu *vcpu);
++void kvm_deliver_vmcall_event(struct kvm_vcpu *vcpu);
++void kvm_deliver_trap_event(struct kvm_vcpu *vcpu, int vector);
++void kvm_deliver_invlpg_event(struct kvm_vcpu *vcpu, u64 gva);
++void kvm_deliver_monitor_trap_flag_event(struct kvm_vcpu *vcpu);
++void kvm_deliver_reboot_event(struct kvm_vcpu *vcpu);
++void kvm_deliver_mem_event(struct kvm_vcpu *vcpu, u64 gpa, u32 error_code);
++
+ #define KVM_SUPPORTED_XCR0     (XFEATURE_MASK_FP | XFEATURE_MASK_SSE \
+ 				| XFEATURE_MASK_YMM | XFEATURE_MASK_BNDREGS \
+ 				| XFEATURE_MASK_BNDCSR | XFEATURE_MASK_AVX512 \
+Index: kvm-introvirt/kernel/include/linux/kvm_host.h
+===================================================================
+--- kvm-introvirt.orig/kernel/include/linux/kvm_host.h
++++ kvm-introvirt/kernel/include/linux/kvm_host.h
+@@ -26,6 +26,7 @@
+ #include <linux/swait.h>
+ #include <linux/refcount.h>
+ #include <linux/nospec.h>
++#include <linux/hashtable.h>
+ #include <asm/signal.h>
+ 
+ #include <linux/kvm.h>
+@@ -321,6 +322,26 @@ struct kvm_vcpu {
+ #endif
+ 	bool preempted;
+ 	bool ready;
++
++	/* Introspection */
++	wait_queue_head_t introspection_wait_queue;
++	wait_queue_head_t introspection_event_completed_wait_queue;
++	struct mutex introspection_event_mutex;
++	struct kvm_introspection_event* introspection_event;
++	bool introspection_event_pending_completion;
++	u32 cr_monitor_mask;
++	bool invlpg_hook;
++	bool syscall_hook_enabled;
++	u64 shadow_msr_ia32_sysenter_cs;
++	bool vmcall_hook_enabled;
++	struct mm_struct *introspection_mm;
++	bool reboot_pending;
++	bool monitor_trap_flag;
++	u64 tid_address;
++
++	wait_queue_head_t pause_wait_queue;
++	atomic_t pause_count;
++
+ 	struct kvm_vcpu_arch arch;
+ 	struct dentry *debugfs_dentry;
+ };
+@@ -442,6 +463,17 @@ struct kvm_memslots {
+ 	int used_slots;
+ };
+ 
++struct mem_access_entry {
++	struct hlist_node node;
++	u64 gfn;
++	uint8_t original_perms;
++};
++
++struct mem_access_table {
++	DECLARE_HASHTABLE(table, 4);
++	struct mutex mutex;
++};
++
+ struct kvm {
+ 	spinlock_t mmu_lock;
+ 	struct mutex slots_lock;
+@@ -504,6 +536,11 @@ struct kvm {
+ 	struct srcu_struct irq_srcu;
+ 	pid_t userspace_pid;
+ 	bool vm_bugged;
++
++	struct mem_access_table mem_access_table;
++	atomic64_t event_id;
++	struct mm_struct *introspection_mm;
++	bool mem_event_enabled;
+ };
+ 
+ #define kvm_err(fmt, ...) \
+@@ -613,6 +650,9 @@ void kvm_vcpu_uninit(struct kvm_vcpu *vc
+ void vcpu_load(struct kvm_vcpu *vcpu);
+ void vcpu_put(struct kvm_vcpu *vcpu);
+ 
++void kvm_vcpu_pause(struct kvm_vcpu *vcpu);
++void kvm_vcpu_unpause(struct kvm_vcpu *vcpu);
++
+ #ifdef __KVM_HAVE_IOAPIC
+ void kvm_arch_post_irq_ack_notifier_list_update(struct kvm *kvm);
+ void kvm_arch_post_irq_routing_update(struct kvm *kvm);
+@@ -811,6 +851,7 @@ bool kvm_vcpu_wake_up(struct kvm_vcpu *v
+ void kvm_vcpu_kick(struct kvm_vcpu *vcpu);
+ int kvm_vcpu_yield_to(struct kvm_vcpu *target);
+ void kvm_vcpu_on_spin(struct kvm_vcpu *vcpu, bool usermode_vcpu_not_eligible);
++void kvm_vcpu_check_pause(struct kvm_vcpu *vcpu); /* IntroVirt addition */
+ 
+ void kvm_flush_remote_tlbs(struct kvm *kvm);
+ void kvm_reload_remote_mmus(struct kvm *kvm);
+@@ -990,6 +1031,8 @@ void kvm_arch_sync_events(struct kvm *kv
+ 
+ int kvm_cpu_has_pending_timer(struct kvm_vcpu *vcpu);
+ void kvm_vcpu_kick(struct kvm_vcpu *vcpu);
++void kvm_arch_introspection_cleanup(struct kvm_vcpu *vcpu);
++void kvm_deliver_shutdown_event(struct kvm_vcpu *vcpu);
+ 
+ bool kvm_is_reserved_pfn(kvm_pfn_t pfn);
+ bool kvm_is_zone_device_pfn(kvm_pfn_t pfn);
+Index: kvm-introvirt/kernel/include/uapi/linux/kvm.h
+===================================================================
+--- kvm-introvirt.orig/kernel/include/uapi/linux/kvm.h
++++ kvm-introvirt/kernel/include/uapi/linux/kvm.h
+@@ -462,6 +462,20 @@ struct kvm_translation {
+ 	__u8  pad[5];
+ };
+ 
++/* for KVM_TRANSLATE_DTB */
++struct kvm_translation_dtb {
++	/* in */
++	__u64 linear_address;
++	__u64 directory_table_base;
++
++	/* out */
++	__u64 physical_address;
++	__u8  valid;
++	__u8  writeable;
++	__u8  usermode;
++	__u8  pad[5];
++};
++
+ /* for KVM_S390_MEM_OP */
+ struct kvm_s390_mem_op {
+ 	/* in */
+@@ -820,6 +834,133 @@ struct kvm_ppc_resize_hpt {
+ #define KVM_GET_MSR_FEATURE_INDEX_LIST    _IOWR(KVMIO, 0x0a, struct kvm_msr_list)
+ 
+ /*
++ * Introspection API (KVM_CAP_INTROSPECTION)
++ */
++
++//
++// structs
++//
++struct kvm_introspection_patch_ver {
++    char buffer[64];
++};
++
++struct kvm_inject_trap {
++    __u32 vector;
++    __u32 error_code;
++    __u64 cr2;
++    int has_error;
++};
++
++struct kvm_ept_permissions {
++    __u64 gfn;
++    __u8 perms : 3;
++};
++
++struct kvm_cr_monitor {
++	int cr;
++	int mode; // Bitmask of KVM_MONITOR_CR_[READ/WRITE]
++};
++
++struct kvm_introspection_event {
++    __u64 event_id; // Increments with each event
++    int event_type; // KVM_EVENT_TYPE_
++    int vcpu_id;    // The ID of the VCPU that triggered the event
++
++    // Registers
++    struct kvm_regs regs;
++    struct kvm_sregs sregs;
++    struct kvm_debugregs debugregs;
++
++    union {
++        struct {
++            int cr;			// 0-8
++			int mode;		// KVM_MONITOR_CR_[READ/WRITE]
++            __u64 value;	// Value being loaded/stored
++        } cr_access;
++        struct {
++            int type; 	// KVM_EVENT_SYSTEM_CALL_TYPE_[X]
++            __u64 return_address;
++        } system_call;
++        struct {
++            int type;	// KVM_EVENT_SYSTEM_CALL_RET_TYPE_[X]
++			__u64 thread_id; // The address of the kernel stack base for this thread (or 0 if not available)
++        } system_call_ret;
++        struct {
++            int vector; // The vector that caused the trap, e.g. BP_VECTOR
++        } trap;
++		struct {
++			__u64 gpa;
++			__u32 error_code;
++		} mem_event;
++		struct {
++			__u64 gva;
++		} invlpg;
++    };
++};
++
++//
++// constants
++//
++#define KVM_EVENT_FAST_SYSCALL 0     // A system call event
++#define KVM_EVENT_FAST_SYSCALL_RET 1 // A system call return event
++#define KVM_EVENT_SW_INT 2           // A software interrupt event
++#define KVM_EVENT_SW_IRET 3          // A software interrupt return event
++#define KVM_EVENT_CR_READ 4          // A control register was read
++#define KVM_EVENT_CR_WRITE 5         // A control register was written to
++#define KVM_EVENT_MSR_READ 6         // An MSR was read
++#define KVM_EVENT_MSR_WRITE 7        // An MSR was written to
++#define KVM_EVENT_EXCEPTION 8        // An x86 exception event
++#define KVM_EVENT_MEM_ACCESS 9       // Hardware assisted paging violation (memory breakpoints)
++#define KVM_EVENT_SINGLE_STEP 10     // Single step event
++#define KVM_EVENT_HYPERCALL 11       // An intercepted hypercall
++#define KVM_EVENT_REBOOT 12          // The guest VM has rebooted
++#define KVM_EVENT_SHUTDOWN 13        // The guest VM has shutdown
++#define KVM_EVENT_INVLPG 14          // INVLPG instruction was executed
++
++#define KVM_EVENT_SYSTEM_CALL_TYPE_SYSCALL	1
++#define KVM_EVENT_SYSTEM_CALL_TYPE_SYSENTER	2
++
++#define KVM_EVENT_SYSTEM_CALL_RET_TYPE_SYSRET	1
++#define KVM_EVENT_SYSTEM_CALL_RET_TYPE_SYSEXIT	2
++
++#define KVM_MONITOR_CR_READ      (1u << 0)
++#define KVM_MONITOR_CR_WRITE     (1u << 1)
++
++#define KVM_CAP_INTROSPECTION 20150308
++#define KVM_INTROSPECTION_API_VERSION 5
++
++#ifndef KVM_INTROSPECTION_PATCH_VERSION
++#define KVM_INTROSPECTION_PATCH_VERSION "UNKNOWN_INTROVIRT_VERSION"
++#endif
++
++//
++// ioctls
++//
++
++// kvm dev level
++#define KVM_ATTACH_VM _IOW(KVMIO, 0xd0, pid_t)
++#define KVM_GET_INTROSPECTION_PATCH_VERSION _IOR(KVMIO, 0xd1, struct kvm_introspection_patch_ver)
++
++// VM Level
++#define KVM_ATTACH_VCPU _IOW(KVMIO, 0xd2, unsigned long)
++#define KVM_SET_MEM_ACCESS_ENABLED _IOW(KVMIO, 0xd4, unsigned long)
++#define KVM_SET_MEM_ACCESS _IOW(KVMIO, 0xd5, struct kvm_ept_permissions)
++
++// VCPU level
++#define KVM_SET_CR_MONITOR _IOW(KVMIO, 0xd6, struct kvm_cr_monitor)
++#define KVM_SET_SYSCALL_HOOK _IOW(KVMIO, 0xd7, unsigned long)
++#define KVM_SET_VMCALL_HOOK _IOW(KVMIO, 0xd8, unsigned long)
++#define KVM_VCPU_PAUSE _IO(KVMIO, 0xd9)
++#define KVM_VCPU_UNPAUSE _IO(KVMIO, 0xda)
++#define KVM_GET_INTROSPECTION_EVENT _IOR(KVMIO, 0xdb, struct kvm_introspection_event)
++#define KVM_COMPLETE_INTROSPECTION_EVENT _IO(KVMIO, 0xdc)
++#define KVM_INJECT_TRAP _IOW(KVMIO, 0xdd, struct kvm_inject_trap)
++#define KVM_SET_MONITOR_TRAP_FLAG _IOW(KVMIO, 0xde, unsigned long)
++#define KVM_SET_INVLPG_HOOK _IOW(KVMIO, 0xdf, unsigned long)
++#define KVM_VCPU_INJECT_SYSCALL _IO(KVMIO, 0xf1)
++#define KVM_VCPU_INJECT_SYSENTER _IO(KVMIO, 0xf2)
++
++/*
+  * Extension capability list.
+  */
+ #define KVM_CAP_IRQCHIP	  0
+Index: kvm-introvirt/kernel/virt/kvm/kvm_main.c
+===================================================================
+--- kvm-introvirt.orig/kernel/virt/kvm/kvm_main.c
++++ kvm-introvirt/kernel/virt/kvm/kvm_main.c
+@@ -355,6 +355,15 @@ int kvm_vcpu_init(struct kvm_vcpu *vcpu,
+ 	r = kvm_arch_vcpu_init(vcpu);
+ 	if (r < 0)
+ 		goto fail_free_run;
++
++	// Introspection
++	mutex_init(&vcpu->introspection_event_mutex);
++	init_waitqueue_head(&vcpu->introspection_event_completed_wait_queue);
++	init_waitqueue_head(&vcpu->introspection_wait_queue);
++	init_waitqueue_head(&vcpu->pause_wait_queue);
++	vcpu->introspection_event = NULL;
++	vcpu->reboot_pending = false;
++
+ 	return 0;
+ 
+ fail_free_run:
+@@ -778,6 +787,9 @@ static struct kvm *kvm_create_vm(unsigne
+ 		goto out_err;
+ 	}
+ 
++	mutex_init(&kvm->mem_access_table.mutex);
++	hash_init(kvm->mem_access_table.table);
++
+ 	return kvm;
+ 
+ out_err:
+@@ -883,6 +895,18 @@ static int kvm_vm_release(struct inode *
+ 	return 0;
+ }
+ 
++static int kvm_vm_introvirt_release(struct inode *inode, struct file *filp)
++{
++    struct kvm *kvm = filp->private_data;
++
++    // IntroVirt tool detaching
++
++    kvm->introspection_mm = NULL;
++
++    kvm_put_kvm(kvm);
++    return 0;
++}
++
+ /*
+  * Allocation size is twice as large as the actual dirty bitmap size.
+  * See x86's kvm_vm_ioctl_get_dirty_log() why this is needed.
+@@ -2558,6 +2582,9 @@ void kvm_vcpu_block(struct kvm_vcpu *vcp
+ 		if (kvm_vcpu_check_block(vcpu) < 0)
+ 			break;
+ 
++		if (unlikely(atomic_read(&vcpu->pause_count) > 0))
++			break;
++
+ 		waited = true;
+ 		schedule();
+ 	}
+@@ -2801,17 +2828,81 @@ static int kvm_vcpu_release(struct inode
+ {
+ 	struct kvm_vcpu *vcpu = filp->private_data;
+ 
++	if (vcpu->vcpu_id == 0)
++		kvm_deliver_shutdown_event(vcpu);
++
+ 	debugfs_remove_recursive(vcpu->debugfs_dentry);
+ 	kvm_put_kvm(vcpu->kvm);
+ 	return 0;
+ }
+ 
++static int kvm_vcpu_introvirt_release(struct inode *inode, struct file *filp)
++{
++	struct kvm_vcpu *vcpu = filp->private_data;
++
++	kvm_vcpu_pause(vcpu);
++
++	mutex_lock(&vcpu->mutex);
++	vcpu_load(vcpu);
++
++	// Turn off introspection features
++	kvm_arch_introspection_cleanup(vcpu);
++
++	vcpu->introspection_event = NULL;
++	vcpu->introspection_event_pending_completion = false;
++	vcpu->introspection_mm = NULL;
++
++	// Resume the VCPU
++	vcpu_put(vcpu);
++	mutex_unlock(&vcpu->mutex);
++
++	// Wake up anyone that's paused
++	atomic_set(&vcpu->pause_count, 0);
++	wake_up_all(&vcpu->pause_wait_queue);
++
++	// If an introspection event is being delivered, wake that up
++	wake_up(&vcpu->introspection_event_completed_wait_queue);
++
++	kvm_put_kvm(vcpu->kvm);
++
++	return 0;
++}
++
++// Poll for introspection events
++unsigned int kvm_vcpu_poll(struct file *filp, poll_table *wait)
++{
++	struct kvm_vcpu* vcpu = filp->private_data;
++	unsigned int mask = 0;
++
++	poll_wait(filp, &vcpu->introspection_wait_queue, wait);
++
++	if(mutex_lock_interruptible(&vcpu->introspection_event_mutex))
++		return -ERESTARTSYS;
++
++	if(vcpu->introspection_event != NULL)
++		mask |= POLLIN;
++
++	mutex_unlock(&vcpu->introspection_event_mutex);
++
++	return mask;
++}
++
+ static struct file_operations kvm_vcpu_fops = {
+ 	.release        = kvm_vcpu_release,
+ 	.unlocked_ioctl = kvm_vcpu_ioctl,
+ 	.mmap           = kvm_vcpu_mmap,
+ 	.llseek		= noop_llseek,
+ 	KVM_COMPAT(kvm_vcpu_compat_ioctl),
++	.poll		= kvm_vcpu_poll,
++};
++
++static struct file_operations kvm_vcpu_introvirt_fops = {
++    .release        = kvm_vcpu_introvirt_release,
++    .unlocked_ioctl = kvm_vcpu_ioctl,
++    .mmap           = kvm_vcpu_mmap,
++    .llseek     = noop_llseek,
++    KVM_COMPAT(kvm_vcpu_compat_ioctl),
++    .poll       = kvm_vcpu_poll,
+ };
+ 
+ /*
+@@ -2825,6 +2916,11 @@ static int create_vcpu_fd(struct kvm_vcp
+ 	return anon_inode_getfd(name, &kvm_vcpu_fops, vcpu, O_RDWR | O_CLOEXEC);
+ }
+ 
++static int create_vcpu_introvirt_fd(struct kvm_vcpu *vcpu)
++{
++    return anon_inode_getfd("kvm-vcpu", &kvm_vcpu_introvirt_fops, vcpu, O_RDWR | O_CLOEXEC);
++}
++
+ static void kvm_create_vcpu_debugfs(struct kvm_vcpu *vcpu)
+ {
+ #ifdef __KVM_HAVE_ARCH_VCPU_DEBUGFS
+@@ -2917,6 +3013,35 @@ vcpu_decrement:
+ 	return r;
+ }
+ 
++/* Attach for introspection */
++static int kvm_vm_ioctl_attach_vcpu(struct kvm *kvm, u32 id) {
++	struct kvm_vcpu* vcpu;
++	int r;
++
++	kvm_get_kvm(kvm);
++
++	r = -ESRCH;
++	vcpu = kvm_get_vcpu_by_id(kvm, id);
++	if(!vcpu)
++		goto out_err;
++
++	r = -EBUSY;
++	if (vcpu->introspection_mm)
++		goto out_err;
++
++	r = create_vcpu_introvirt_fd(vcpu);
++	if(r < 0)
++		goto out_err;
++
++	vcpu->introspection_mm = current->mm;
++	goto out;
++
++out_err:
++	kvm_put_kvm(kvm);
++out:
++	return r;
++}
++
+ static int kvm_vcpu_ioctl_set_sigmask(struct kvm_vcpu *vcpu, sigset_t *sigset)
+ {
+ 	if (sigset) {
+@@ -2928,6 +3053,31 @@ static int kvm_vcpu_ioctl_set_sigmask(st
+ 	return 0;
+ }
+ 
++void kvm_vcpu_pause(struct kvm_vcpu *vcpu)
++{
++	if (atomic_inc_return(&vcpu->pause_count) == 1) {
++		/*
++		 * Wake up the vcpu
++		 */
++		kvm_vcpu_kick(vcpu);
++
++		/*
++		 * Wait for the vcpu to pause
++		 */
++		if (mutex_lock_killable(&vcpu->mutex)) {
++			return;
++		}
++		mutex_unlock(&vcpu->mutex);
++	}
++}
++
++void kvm_vcpu_unpause(struct kvm_vcpu *vcpu)
++{
++	if(atomic_dec_and_test(&vcpu->pause_count)) {
++		wake_up_all(&vcpu->pause_wait_queue);
++	}
++}
++
+ static long kvm_vcpu_ioctl(struct file *filp,
+ 			   unsigned int ioctl, unsigned long arg)
+ {
+@@ -2937,7 +3087,7 @@ static long kvm_vcpu_ioctl(struct file *
+ 	struct kvm_fpu *fpu = NULL;
+ 	struct kvm_sregs *kvm_sregs = NULL;
+ 
+-	if (vcpu->kvm->mm != current->mm || vcpu->kvm->vm_bugged)
++	if (/*vcpu->kvm->mm != current->mm ||*/ vcpu->kvm->vm_bugged)
+ 		return -EIO;
+ 
+ 	if (unlikely(_IOC_TYPE(ioctl) != KVMIO))
+@@ -2951,6 +3101,69 @@ static long kvm_vcpu_ioctl(struct file *
+ 	if (r != -ENOIOCTLCMD)
+ 		return r;
+ 
++	// IOCTLs that take place without locking vcpu->mutex
++	switch (ioctl) {
++	case KVM_VCPU_PAUSE: {
++		r = 0;
++		kvm_vcpu_pause(vcpu);
++		return r;
++	}
++	case KVM_VCPU_UNPAUSE: {
++		r = 0;
++		kvm_vcpu_unpause(vcpu);
++		return r;
++	}
++	case KVM_GET_INTROSPECTION_EVENT: {
++		if(mutex_lock_interruptible(&vcpu->introspection_event_mutex))
++			return -ERESTARTSYS;
++
++		r = -ENOENT;
++		if(vcpu->introspection_event) {
++			r = -EFAULT;
++			if(!copy_to_user(argp, vcpu->introspection_event,
++					sizeof(struct kvm_introspection_event))) {
++				r = 0;
++				vcpu->introspection_event = NULL;
++			}
++		}
++
++		mutex_unlock(&vcpu->introspection_event_mutex);
++		return r;
++	}
++	case KVM_COMPLETE_INTROSPECTION_EVENT: {
++		if(mutex_lock_interruptible(&vcpu->introspection_event_mutex))
++			return -ERESTARTSYS;
++
++		r = -EINVAL;
++		if(vcpu->introspection_event_pending_completion) {
++			vcpu->introspection_event_pending_completion = false;
++			r = 0;
++
++			// Wake up the VCPU
++			wake_up(&vcpu->introspection_event_completed_wait_queue);
++		}
++
++		mutex_unlock(&vcpu->introspection_event_mutex);
++
++		return r;
++	}
++	}
++
++	/*
++	 * Block Qemu while we're paused.
++	 *
++	 * This almost never happens. Qemu would have
++	 * to be in userland while a kvm_vcpu_pause()
++	 * is issued. Normally we kick it and pause after
++	 * it wakes.
++	 */
++	if (unlikely(vcpu->kvm->mm == current->mm
++		&& atomic_read(&vcpu->pause_count))) {
++			/* Wait until we're resumed */
++			wait_event(vcpu->pause_wait_queue,
++				atomic_read(&vcpu->pause_count) == 0);
++	}
++
+ 	if (mutex_lock_killable(&vcpu->mutex))
+ 		return -EINTR;
+ 	switch (ioctl) {
+@@ -2974,7 +3187,11 @@ static long kvm_vcpu_ioctl(struct file *
+ 				synchronize_rcu();
+ 			put_pid(oldpid);
+ 		}
++
++		//kvm_vcpu_check_for_pause(vcpu);
++
+ 		r = kvm_arch_vcpu_ioctl_run(vcpu, vcpu->run);
++
+ 		trace_kvm_userspace_exit(vcpu->run->exit_reason, r);
+ 		break;
+ 	}
+@@ -3413,7 +3630,7 @@ static long kvm_vm_ioctl(struct file *fi
+ 	void __user *argp = (void __user *)arg;
+ 	int r;
+ 
+-	if (kvm->mm != current->mm || kvm->vm_bugged)
++	if (/*kvm->mm != current->mm ||*/ kvm->vm_bugged)
+ 		return -EIO;
+ 	switch (ioctl) {
+ 	case KVM_CREATE_VCPU:
+@@ -3588,6 +3805,9 @@ out_free_irq_routing:
+ 	case KVM_CHECK_EXTENSION:
+ 		r = kvm_vm_ioctl_check_extension_generic(kvm, arg);
+ 		break;
++	case KVM_ATTACH_VCPU:
++		r = kvm_vm_ioctl_attach_vcpu(kvm, arg);
++		break;
+ 	default:
+ 		r = kvm_arch_vm_ioctl(filp, ioctl, arg);
+ 	}
+@@ -3664,11 +3884,100 @@ static long kvm_vm_compat_ioctl(struct f
+ }
+ #endif
+ 
++static void kvm_vm_munmap(struct vm_area_struct *vma) {
++	struct page* page = vma->vm_private_data;
++	put_page(page);
++}
++
++static struct vm_operations_struct kvm_vm_mapping_ops = {
++    .close        = kvm_vm_munmap,
++};
++
++static int kvm_vm_mmap(struct file *filp, struct vm_area_struct *vma)
++{
++	struct kvm *kvm = vma->vm_file->private_data;
++	const gfn_t first_page = vma->vm_start >> PAGE_SHIFT;
++	const gfn_t last_page = (vma->vm_end - 1) >> PAGE_SHIFT;
++	const unsigned int page_count = (last_page - first_page) + 1;
++	unsigned long addresses[16];
++	struct page* pages[16];
++	int i;
++
++	vma->vm_ops = &kvm_vm_mapping_ops;
++
++	if ( page_count > 1 ) {
++		return -E2BIG;
++	}
++
++	/*
++	 * Translate each guest gfn to an address
++	 */
++	for(i = 0; i < page_count; ++i) {
++		gfn_t gfn = vma->vm_pgoff + i;
++		uint64_t addr = gfn_to_hva(kvm, gfn);
++		if(kvm_is_error_hva(addr)) {
++			if(addr == KVM_HVA_ERR_BAD) {
++				return -EFAULT;
++			} else if(addr == KVM_HVA_ERR_RO_BAD) {
++				return -EPERM;
++			} else {
++				return -EINVAL;
++			}
++		}
++		addresses[i] = addr;
++	}
++
++	/*
++	 * Translate each address to page structs
++	 */
++	down_read(&kvm->mm->mmap_sem);
++	for(i = 0; i < page_count; ++i) {
++		int npages;
++		npages = get_user_pages_remote(current, kvm->mm, addresses[i], 1, FOLL_WRITE,
++				&pages[i],
++				NULL, NULL);
++
++		if(unlikely(npages != 1)) {
++			up_read(&kvm->mm->mmap_sem);
++			return VM_FAULT_SIGBUS;
++		}
++	}
++	up_read(&kvm->mm->mmap_sem);
++
++	/*
++	 * Do the actual mapping
++	 */
++	down_write(&kvm->mm->mmap_sem);
++	for(i = 0; i < page_count; ++i) {
++		int r;
++
++		r = remap_pfn_range(vma, vma->vm_start + (0x1000 * i),
++				page_to_pfn(pages[i]), 0x1000,
++				vma->vm_page_prot);
++		if(r)
++			printk(KERN_ALERT "vm_insert_page() failed : %d\n", r);
++
++		vma->vm_private_data = pages[i];
++	}
++	up_write(&kvm->mm->mmap_sem);
++
++	return 0;
++}
++
+ static struct file_operations kvm_vm_fops = {
+ 	.release        = kvm_vm_release,
+ 	.unlocked_ioctl = kvm_vm_ioctl,
+ 	.llseek		= noop_llseek,
+ 	KVM_COMPAT(kvm_vm_compat_ioctl),
++	.mmap           = kvm_vm_mmap,
++};
++
++static struct file_operations kvm_vm_introvirt_fops = {
++    .release        = kvm_vm_introvirt_release,
++    .unlocked_ioctl = kvm_vm_ioctl,
++	KVM_COMPAT(kvm_vm_compat_ioctl),
++    .llseek     = noop_llseek,
++    .mmap           = kvm_vm_mmap,
+ };
+ 
+ static int kvm_dev_ioctl_create_vm(unsigned long type)
+@@ -3717,10 +4026,39 @@ put_kvm:
+ 	return r;
+ }
+ 
++/*
++ * Find a VM based on the PID
++ */
++struct kvm* get_vm_by_pid(pid_t pid)
++{
++	struct kvm *rv;
++	struct kvm *kvm;
++
++	rv = NULL;
++
++	mutex_lock(&kvm_lock);
++	list_for_each_entry(kvm, &vm_list, vm_list)
++	{
++		if(kvm->mm && kvm->mm->owner)
++		{
++			if(kvm->mm->owner->pid == pid)
++			{
++				rv = kvm;
++				break;
++			}
++		}
++	}
++
++	mutex_unlock(&kvm_lock);
++
++	return rv;
++}
++
+ static long kvm_dev_ioctl(struct file *filp,
+ 			  unsigned int ioctl, unsigned long arg)
+ {
+ 	long r = -EINVAL;
++	void __user *argp = (void __user *)arg;
+ 
+ 	switch (ioctl) {
+ 	case KVM_GET_API_VERSION:
+@@ -3750,6 +4088,48 @@ static long kvm_dev_ioctl(struct file *f
+ 	case KVM_TRACE_DISABLE:
+ 		r = -EOPNOTSUPP;
+ 		break;
++	case KVM_ATTACH_VM: {
++		struct kvm* kvm;
++
++		r = -ESRCH;
++		kvm = get_vm_by_pid(arg);
++		if(!kvm)
++			goto out;
++
++		r = -EBUSY;
++		if(kvm->introspection_mm)
++		    goto out;
++
++		/* Increment the counter */
++		kvm_get_kvm(kvm);
++
++		/* Get handle to the VM */
++		r = anon_inode_getfd("kvm-vm", &kvm_vm_introvirt_fops, kvm,
++				O_RDWR | O_CLOEXEC);
++
++		kvm->introspection_mm = current->mm;
++
++		if(r < 0) {
++			kvm_put_kvm(kvm);
++			kvm->introspection_mm = NULL;
++		}
++		break;
++	}
++	case KVM_GET_INTROSPECTION_PATCH_VERSION: {
++		const char* str = KVM_INTROSPECTION_PATCH_VERSION;
++		const int len = strlen(str) + 1;
++
++		if (len > sizeof(struct kvm_introspection_patch_ver)) {
++			r = -ETOOSMALL;
++			goto out;
++		}
++
++		r = -EFAULT;
++		if(!copy_to_user(argp, str, len)) {
++			r = 0;
++		}
++		break;
++	}
+ 	default:
+ 		return kvm_arch_dev_ioctl(filp, ioctl, arg);
+ 	}

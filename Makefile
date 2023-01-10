@@ -3,16 +3,16 @@ include config.mk
 build:
 	cp $(KERNEL_CONFIG_FILE) ./kernel/.config
 	cp $(KERNEL_SYMVERS_FILE) ./kernel/
-	$(MAKE) -C ./kernel/ prepare
+	yes "" | $(MAKE) -C ./kernel/ prepare
 	$(MAKE) -C ./kernel/ modules_prepare
 	KCPPFLAGS="-DKVM_INTROSPECTION_PATCH_VERSION=\\\"$(PATCH_VERSION)\\\"" $(MAKE) -C ./kernel/ M=arch/x86/kvm/
 
 clean:
-	$(MAKE) -C ./kernel/ M=arch/x86/kvm/ clean
+	$(MAKE) -C ./kernel/ clean
 
 distclean:
 	rm -rf .pc
-	rm -rf ./kernel/
+#	rm -rf ./kernel/
 	rm -f config.mk
 	rm -f .build_vars
 
