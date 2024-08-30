@@ -1,75 +1,73 @@
 #!/bin/bash
 
-if [[ ! -d .git ]]
-then
-    # Assume this is a package build
-    # .build_vars and config.mk should already be generated
-    . .build_vars
-    if [[ ! -d kernel ]]
-    then
-        echo "Kernel directory is missing! Build will fail."
-        exit 1
-    fi
-    if [[ ! -f config.mk ]]
-    then
-        echo "config.mk is missing! Build will fail."
-        exit 1
-    fi
-    exit 0
+#
+# NOTE: We're assuming Ubuntu and HWE for now
+#
+KERNEL_VERSION_FULL="$(uname -r)"
+LSB_RELEASE=$(lsb_release -sr)
+LSB_CODENAME=$(lsb_release -sc)
+PATCH_DIR="ubuntu/$(lsb_release -sc)/hwe/$(uname -r)"
+PATCH_VERSION="1.0.0"
+EMAIL="${DEBEMAIL:=laplantes@ainfosec.com}"
+FULLNAME="${DEBFULLNAME:=Sean LaPlante}"
+
+if [[ ! -d ${PATCH_DIR} ]]; then
+    echo "No patch for $(uname -r)".
+    echo "Make the ${PATCH_DIR} directory and copy most recent patch files over to start working on the patch."
+    exit 1
 fi
 
-DISTRO=$(git branch|grep ^\*|grep -Po ' \K[a-zA-Z]+(?=/)')
-DISTRO_RELEASE=$(git branch|grep ^\*|grep -Po "(?<=$DISTRO/).*(?=/)")
-HWE_TAG=$(git branch|grep ^\*|grep -Po "Ubuntu-hwe-[^-]+")
-if [ -z "$HWE_TAG" ]
-then
-    KERNEL_TAG=$(git branch|grep ^\*|grep -Po "(?<=$DISTRO_RELEASE/)[_a-zA-Z0-9-\.]+(?=$)")
-    HWE_VERSION=""
-else
-    KERNEL_TAG=$(git branch|grep ^\*|grep -Po "(?<=$DISTRO_RELEASE/)$HWE_TAG-[_a-zA-Z0-9-\.]+(?=$)")
-    HWE_VERSION=$(echo $HWE_TAG|grep -Po "[0-9\.]+")
+pushd ${PATCH_DIR} > /dev/null
+
+if [[ ! -d "./kernel" ]]; then
+    echo "Getting kernel source. This could take a bit..."
+    apt source linux-image-unsigned-$(uname -r)
+    mv linux*$(uname -r | cut -d- -f 1)/ kernel
+    rm -f linux*.dsc linux*.tar.gz linux*.diff.gz
 fi
-KERNEL_FLAVOR="-generic"
-KERNEL_VERSION=$(git branch|grep ^\*|grep -Po "(?<=$HWE_VERSION\-)[0-9\.-]+(?=\.[0-9]+)")
-KERNEL_VERSION_FULL=$(git branch|grep ^\*|grep -Po "(?<=$HWE_VERSION\-)[0-9\.-]+\.[0-9]+")
-PATCH_VERSION=$(head -n1 debian/changelog |grep -Po "(?<=$KERNEL_VERSION_FULL-).*(?=~)")
 
-#TODO: We're assuming Ubuntu right now
-
-if [[ ! -d kernel ]]
-then
-    # Clone the kernel into a working directory
-    git clone --branch $KERNEL_TAG --depth 1 git://kernel.ubuntu.com/ubuntu/ubuntu-$DISTRO_RELEASE.git kernel
+if quilt unapplied; then
     # Apply patches
-    quilt push -a
+    if ! quilt push -a; then
+        echo "Patch failed to apply. Use \"quilt push -a -f\" and then reconcile the *.rej files"
+        echo "Then update the patch with \"quilt refresh\" followed by \"quilt pop -a\""
+        echo "Make sure to \"quilt add <path>\" for any new files that may need to be patched before"
+        echo "making any changes to those files."
+        popd > /dev/null
+        exit 1
+    fi
 fi
+popd > /dev/null
 
-truncate -s0 .build_vars
-echo "DISTRO=$DISTRO" >> .build_vars
-echo "DISTRO_RELEASE=$DISTRO_RELEASE" >> .build_vars
-echo "HWE_TAG=$HWE_TAG" >> .build_vars
-echo "HWE_VERSION=$HWE_VERSION" >> .build_vars
-echo "KERNEL_TAG=$KERNEL_TAG" >> .build_vars
-echo "KERNEL_FLAVOR=$KERNEL_FLAVOR" >> .build_vars
-echo "KERNEL_VERSION=$KERNEL_VERSION" >> .build_vars
-echo "KERNEL_VERSION_FULL=$KERNEL_VERSION_FULL" >> .build_vars
-echo "PATCH_VERSION=$PATCH_VERSION" >> .build_vars
-
+# Create the config.mk file
 truncate -s0 config.mk
-echo "KERNEL_LIB_PATH = /lib/modules/$KERNEL_VERSION$KERNEL_FLAVOR" >> config.mk
-echo "KERNEL_CONFIG_FILE = /boot/config-$KERNEL_VERSION$KERNEL_FLAVOR" >> config.mk
-echo "KERNEL_SYMVERS_FILE = /usr/src/linux-headers-$KERNEL_VERSION$KERNEL_FLAVOR/Module.symvers" >> config.mk
-echo 'INSTALL_DIR = $(DESTDIR)$(KERNEL_LIB_PATH)/updates/introvirt/' >> config.mk
-echo "PATCH_VERSION = $PATCH_VERSION" >> config.mk
-echo "KERNEL_VERSION_FULLER = $KERNEL_VERSION$KERNEL_FLAVOR" >> config.mk
+echo "WORKING_DIR=${PATCH_DIR}" >> config.mk
+echo "KERNEL_CONFIG_FILE=/boot/config-$(uname -r)" >> config.mk
+echo "KERNEL_SYMVERS_FILE=/usr/src/linux-headers-$(uname -r)/Module.symvers" >> config.mk
+echo "PATCH_VERSION=${PATCH_VERSION}" >> config.mk
+echo "INSTALL_DIR=/lib/modules/$(uname -r)/updates/introvirt/" >> config.mk
+echo "DEB_NAME=kvm-introvirt-${KERNEL_VERSION_FULL}.${LSB_RELEASE}-${PATCH_VERSION}.deb" >> config.mk
+echo "KERNEL_VERSION_FULL=${KERNEL_VERSION_FULL}" >> config.mk
 
-rm -f debian/*.install debian/*.postinst
+rm -f debpkg/DEBIAN/postinst debpkg/DEBIAN/postrm debpkg/DEBIAN/preinst
+cp -f debpkg/DEBIAN/postinst.tpl debpkg/DEBIAN/postinst
+cp -f debpkg/DEBIAN/preinst.tpl debpkg/DEBIAN/preinst
+cp -f debpkg/DEBIAN/postrm.tpl debpkg/DEBIAN/postrm
 
-cp -f debian/kvm-introvirt.install.tpl "debian/kvm-introvirt-$KERNEL_VERSION-generic.install"
-cp -f debian/kvm-introvirt.postinst.tpl "debian/kvm-introvirt-$KERNEL_VERSION-generic.postinst"
+# Update the debian control and post install files
+sed -i "s/KERNEL_VERSION_FULL=\"<<<REPLACED_BY_CONFIGURE>>>\"/KERNEL_VERSION_FULL=\"${KERNEL_VERSION_FULL}\"/g" debpkg/DEBIAN/postinst
+sed -i "s/KERNEL_VERSION_FULL=\"<<<REPLACED_BY_CONFIGURE>>>\"/KERNEL_VERSION_FULL=\"${KERNEL_VERSION_FULL}\"/g" debpkg/DEBIAN/preinst
+sed -i "s/KERNEL_VERSION_FULL=\"<<<REPLACED_BY_CONFIGURE>>>\"/KERNEL_VERSION_FULL=\"${KERNEL_VERSION_FULL}\"/g" debpkg/DEBIAN/postrm
+sed -i "s/[0-9]\+\.[0-9]\+\.[0-9]\+\-[0-9]\+-[a-z]\+"/${KERNEL_VERSION_FULL}/g debpkg/DEBIAN/control
 
-sed -i "s/[0-9]\+\.[0-9]\+\.[0-9]\+-[0-9]\+\.[0-9]\+/$KERNEL_VERSION_FULL/g" debian/changelog
-sed -i "s/[0-9]\+\.[0-9]\+\.[0-9]\+-[0-9]\+$KERNEL_FLAVOR/$KERNEL_VERSION$KERNEL_FLAVOR/g" debian/control
-sed -i "s/[0-9]\+\.[0-9]\+\.[0-9]\+-[0-9]\+$KERNEL_FLAVOR/$KERNEL_VERSION$KERNEL_FLAVOR/g" debian/*.postinst
+# Build the changelog
+truncate -s0 debpkg/DEBIAN/changelog
+cat << EOF > debpkg/DEBIAN/changelog
+kvm-introvirt (${KERNEL_VERSION_FULL}.${LSB_RELEASE}-${PATCH_VERSION}~${LSB_CODENAME}1) ${LSB_CODENAME}; urgency=medium
+
+  * kvm-introvirt patch ${PATCH_VERSION} for ${KERNEL_VERSION_FULL}
+
+ -- ${FULLNAME} <${EMAIL}>  $(date -u)
+EOF
 
 exit 0

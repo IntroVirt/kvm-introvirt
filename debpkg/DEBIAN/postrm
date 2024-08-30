@@ -1,0 +1,10 @@
+#!/bin/bash
+
+KERNEL_VERSION_FULL="6.5.0-35-generic"
+
+rmmod kvm-intel kvm
+rm -rf "/lib/modules/${KERNEL_VERSION_FULL}/updates/introvirt/"
+depmod -a "${KERNEL_VERSION_FULL}"
+modprobe kvm-intel
+
+exit 0
