@@ -12,3 +12,4 @@ debpkg/DEBIAN/changelog
 debpkg/DEBIAN/postrm
 debpkg/DEBIAN/preinst
 debpkg/DEBIAN/postinst
+debpkg/DEBIAN/control

@@ -54,11 +54,10 @@ cp -f debpkg/DEBIAN/postinst.tpl debpkg/DEBIAN/postinst
 cp -f debpkg/DEBIAN/preinst.tpl debpkg/DEBIAN/preinst
 cp -f debpkg/DEBIAN/postrm.tpl debpkg/DEBIAN/postrm
 
-# Update the debian control and post install files
+# Update the debian template install files
 sed -i "s/KERNEL_VERSION_FULL=\"<<<REPLACED_BY_CONFIGURE>>>\"/KERNEL_VERSION_FULL=\"${KERNEL_VERSION_FULL}\"/g" debpkg/DEBIAN/postinst
 sed -i "s/KERNEL_VERSION_FULL=\"<<<REPLACED_BY_CONFIGURE>>>\"/KERNEL_VERSION_FULL=\"${KERNEL_VERSION_FULL}\"/g" debpkg/DEBIAN/preinst
 sed -i "s/KERNEL_VERSION_FULL=\"<<<REPLACED_BY_CONFIGURE>>>\"/KERNEL_VERSION_FULL=\"${KERNEL_VERSION_FULL}\"/g" debpkg/DEBIAN/postrm
-sed -i "s/[0-9]\+\.[0-9]\+\.[0-9]\+\-[0-9]\+-[a-z]\+"/${KERNEL_VERSION_FULL}/g debpkg/DEBIAN/control
 
 # Build the changelog
 truncate -s0 debpkg/DEBIAN/changelog
@@ -68,6 +67,21 @@ kvm-introvirt (${KERNEL_VERSION_FULL}.${LSB_RELEASE}-${PATCH_VERSION}~${LSB_CODE
   * kvm-introvirt patch ${PATCH_VERSION} for ${KERNEL_VERSION_FULL}
 
  -- ${FULLNAME} <${EMAIL}>  $(date -u)
+EOF
+
+# Build the control
+truncate -s0 debpkg/DEBIAN/control
+cat << EOF > debpkg/DEBIAN/control
+Package: kvm-introvirt-${KERNEL_VERSION_FULL}
+Version: 1.0.0
+Section: libs
+Maintainer: Sean LaPlante <laplantes@ainfosec.com>
+Architecture: all
+Depends: linux-image-${KERNEL_VERSION_FULL}
+Description: Virtual machine introspection KVM driver
+Homepage: https://github.com/IntroVirt/kvm-introvirt/
+Vcs-Browser: https://github.com/IntroVirt/kvm-introvirt/
+Vcs-Git: https://github.com/IntroVirt/kvm-introvirt.git
 EOF
 
 exit 0
