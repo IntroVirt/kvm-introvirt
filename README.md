@@ -16,6 +16,7 @@ If you cannot find a deb package that matches your OS or kernel version, see bel
 ## Build Instructions
 
 1. Edit `/etc/apt/sources.list` to enable the primary `deb-src` repos for your distribution (More info here: https://wiki.ubuntu.com/Kernel/BuildYourOwnKernel)
+1. Run `sudo apt update` after editing your `sources.list`
 1. Install the dependencies:
 
     ```shell
@@ -23,7 +24,6 @@ If you cannot find a deb package that matches your OS or kernel version, see bel
         bc devscripts quilt git flex bison libssl-dev libelf-dev debhelper \
         libncurses-dev gawk openssl dkms libudev-dev libpci-dev libiberty-dev \
         autoconf llvm \
-        linux-source-$(uname -r | cut -d'-' -f1) \
         linux-headers-$(uname -r) \
         linux-modules-$(uname -r)
 
@@ -31,16 +31,16 @@ If you cannot find a deb package that matches your OS or kernel version, see bel
     sudo apt build-dep linux linux-image-unsigned-$(uname -r)
     ```
 
-1. Clone and build the module (assuming the branch exists for your kernel)
+1. Clone and build the module (assuming the folder exists for your kernel)
 
     ```shell
     git clone https://github.com/IntroVirt/kvm-introvirt.git
     cd ./kvm-introvirt
 
-    # If configure says the kernel is unsupported, see the next section on supporting a new kernel
+    # If configure says the kernel is unsupported, see the next section on "Supporting a new kernel version"
     ./configure
 
-    make
+    make -j
     sudo make install
     ```
 
@@ -48,29 +48,33 @@ If you cannot find a deb package that matches your OS or kernel version, see bel
 
 1. Reload the KVM module
 
-    ```bash
+    ```shell
     sudo rmmod kvm-intel kvm
     sudo modprobe kvm-intel
     ```
 
 If there are issues/errors loading the modified version of KVM, check `dmesg` for more details. To undo these changes and get the original version of KVM back:
 
-```bash
+```shell
+# Manually
 sudo rmmod kvm-intel kvm
 sudo rm -rf /lib/modules/$(uname -r)/updates/introvirt/
 sudo depmod -a $(uname -r)
 sudo modprobe kvm-intel
+
+# Or automatically
+make uninstall
 ```
 
 ## Supporting a new kernel version
 
 To support a new version, reset the environment and create a new branch.
 
-```bash
+```shell
 # Cleans up the kernel folder
 make distclean
-git reset --hard
-git clean -x -d -f
+
+# Make a branch to support the new kernel
 git checkout -b ubuntu/$(lsb_release -sc)/Ubuntu-hwe-$(uname -r)
 
 # Make the directory for the patch
@@ -91,7 +95,7 @@ export DEBFULLNAME="<your name>"
 
 When running `./configure`, quilt will attempt to apply the patch to the new target kernel. If the patch does not cleanly apply, you will need to update it. When the patch fails to apply, we need to force apply what we can:
 
-```bash
+```shell
 cd ubuntu/$(lsb_release -sc)/hwe/$(uname -r)
 quilt push -a -f
 ```
@@ -100,31 +104,51 @@ This will apply the parts of the patch that didn't fail, and create `*.rej` file
 
 Once done, or if the patch applied successfully in the first place:
 
-```bash
+```shell
 # Update the .patch file with the changes (if any) to the patch
 quilt refresh
 # Rename the patch for this kernel.
 quilt rename kvm-introvirt-hwe-$(uname -r)
-# Update the header to specify the new kernel version we patched
+
+# Generate the header text for the quilt patch
+cat << EOF 
+Description: KVM IntroVirt patch for Ubuntu HWE kernel $(uname -r)
+ The KVM IntroVirt patch adds introspection support to KVM. This allows
+ for inspection of virtual machine memory and manipulation of running processes in-guest.
+ This patch is required for compatibility with the user-land IntroVirt library.
+Author: AIS Inc., introvirt@ainfosec.com
+Origin: upstream, https://github.com/IntroVirt/kvm-introvirt
+Bug: https://github.com/IntroVirt/kvm-introvirt/issues
+Last-Update: $(date +"%Y-%m-%d")
+---
+This patch header follows DEP-3: http://dep.debian.net/deps/dep3/
+EOF
+
+# Copy paste the output from the previous command as the new header for the patch
 quilt header -e
 
 # Change back to the repo root
 cd ../../../../
 
+# Run configure again and the patch should apply cleanly
+./configure
 # Build it
-make
+make -j
 # Build the .deb package
 make package
-# Install the modified KVM kernel module
-sudo make install
-# Load it
-sudo rmmod kvm-intel kvm
-sudo modprobe kvm-intel
+# Install
+sudo dpkg -i ./dist/kvm-introvirt-$(uname -r)*.deb
 
-# Test it - then un-apply the patch
+# Un-apply the patch
 cd ubuntu/$(lsb_release -sc)/hwe/$(uname -r)
 quilt pop
 cd -
+
+# Check dmesg to confirm success
+sudo dmesg
+# Should see 2 lines like the following:
+# kvm: loading out-of-tree module taints kernel.
+# kvm: module verification failed: signature and/or required key missing - tainting kernel
 ```
 
 Use `dmesg` for more information if `modprobe` fails.
