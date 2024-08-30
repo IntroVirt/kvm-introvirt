@@ -5,6 +5,7 @@ kernel/
 *.dsc
 *.gz
 *.patch~
+*~
 dist/
 debpkg/lib/
 debpkg/usr/

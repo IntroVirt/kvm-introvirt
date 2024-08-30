@@ -24,6 +24,7 @@ if [[ ! -d "./kernel" ]]; then
     apt source linux-image-unsigned-$(uname -r)
     mv linux*$(uname -r | cut -d- -f 1)/ kernel
     rm -f linux*.dsc linux*.tar.gz linux*.diff.gz
+    chmod +x kernel/scripts/*.sh
 fi
 
 if quilt unapplied; then
