@@ -6,6 +6,8 @@ IntroVirt KVM module. Intel CPUs have full support. AMD CPUs are lacking support
 
 kvm-introvirt can installed from prebuilt debian packages for Ubuntu 18.04, 22.04, or 24.04. The latest deb packages can be downloaded from the releases.
 
+1. Make sure SecureBoot is disabled on your system (you can also run IntroVirt nested in KVM)
+    * _If someone wants to help me figure out a way around this please do!_
 1. Download the latest `.deb` package for your OS and kernel version
 1. Shut down any running VMs
 1. Change to the download directory
