@@ -8,10 +8,10 @@ Bug: https://github.com/IntroVirt/kvm-introvirt/issues
 Last-Update: 2024-09-03
 ---
 This patch header follows DEP-3: http://dep.debian.net/deps/dep3/
-Index: 6.8.0-40-generic/kernel/arch/x86/include/asm/kvm_host.h
+Index: 6.8.0-41-generic/kernel/arch/x86/include/asm/kvm_host.h
 ===================================================================
---- 6.8.0-40-generic.orig/kernel/arch/x86/include/asm/kvm_host.h
-+++ 6.8.0-40-generic/kernel/arch/x86/include/asm/kvm_host.h
+--- 6.8.0-41-generic.orig/kernel/arch/x86/include/asm/kvm_host.h
++++ 6.8.0-41-generic/kernel/arch/x86/include/asm/kvm_host.h
 @@ -454,6 +454,7 @@ struct kvm_mmu {
  			    struct x86_exception *exception);
  	int (*sync_spte)(struct kvm_vcpu *vcpu,
@@ -22,7 +22,7 @@ Index: 6.8.0-40-generic/kernel/arch/x86/include/asm/kvm_host.h
  	union kvm_mmu_page_role root_role;
 @@ -1797,6 +1798,13 @@ struct kvm_x86_ops {
  	unsigned long (*vcpu_get_apicv_inhibit_reasons)(struct kvm_vcpu *vcpu);
- 
+
  	gva_t (*get_untagged_addr)(struct kvm_vcpu *vcpu, gva_t gva, unsigned int flags);
 +
 +	/* IntroVirt patch */
@@ -32,16 +32,16 @@ Index: 6.8.0-40-generic/kernel/arch/x86/include/asm/kvm_host.h
 +	bool (*hap_permissions_allowed)(uint16_t perms);
 +	void (*update_syscall_intercept)(struct kvm_vcpu *vcpu);
  };
- 
+
  struct kvm_x86_nested_ops {
-Index: 6.8.0-40-generic/kernel/arch/x86/kvm/emulate.c
+Index: 6.8.0-41-generic/kernel/arch/x86/kvm/emulate.c
 ===================================================================
---- 6.8.0-40-generic.orig/kernel/arch/x86/kvm/emulate.c
-+++ 6.8.0-40-generic/kernel/arch/x86/kvm/emulate.c
+--- 6.8.0-41-generic.orig/kernel/arch/x86/kvm/emulate.c
++++ 6.8.0-41-generic/kernel/arch/x86/kvm/emulate.c
 @@ -2455,6 +2455,69 @@ static int em_syscall(struct x86_emulate
  	return X86EMUL_CONTINUE;
  }
- 
+
 +static int em_sysret(struct x86_emulate_ctxt *ctxt)
 +{
 +	const struct x86_emulate_ops *ops = ctxt->ops;
@@ -117,10 +117,10 @@ Index: 6.8.0-40-generic/kernel/arch/x86/kvm/emulate.c
  	DI(ImplicitOps | Priv, invd), DI(ImplicitOps | Priv, wbinvd), N, N,
  	N, D(ImplicitOps | ModRM | SrcMem | NoAccess), N, N,
  	/* 0x10 - 0x1F */
-Index: 6.8.0-40-generic/kernel/arch/x86/kvm/irq.c
+Index: 6.8.0-41-generic/kernel/arch/x86/kvm/irq.c
 ===================================================================
---- 6.8.0-40-generic.orig/kernel/arch/x86/kvm/irq.c
-+++ 6.8.0-40-generic/kernel/arch/x86/kvm/irq.c
+--- 6.8.0-41-generic.orig/kernel/arch/x86/kvm/irq.c
++++ 6.8.0-41-generic/kernel/arch/x86/kvm/irq.c
 @@ -58,6 +58,9 @@ int kvm_cpu_has_extint(struct kvm_vcpu *
  	 * pending interrupt or should re-inject an injected
  	 * interrupt.
@@ -130,11 +130,11 @@ Index: 6.8.0-40-generic/kernel/arch/x86/kvm/irq.c
 +
  	if (!lapic_in_kernel(v))
  		return v->arch.interrupt.injected;
- 
-Index: 6.8.0-40-generic/kernel/arch/x86/kvm/vmx/capabilities.h
+
+Index: 6.8.0-41-generic/kernel/arch/x86/kvm/vmx/capabilities.h
 ===================================================================
---- 6.8.0-40-generic.orig/kernel/arch/x86/kvm/vmx/capabilities.h
-+++ 6.8.0-40-generic/kernel/arch/x86/kvm/vmx/capabilities.h
+--- 6.8.0-41-generic.orig/kernel/arch/x86/kvm/vmx/capabilities.h
++++ 6.8.0-41-generic/kernel/arch/x86/kvm/vmx/capabilities.h
 @@ -71,6 +71,7 @@ extern struct vmcs_config vmcs_config __
  struct vmx_capability {
  	u32 ept;
@@ -142,11 +142,11 @@ Index: 6.8.0-40-generic/kernel/arch/x86/kvm/vmx/capabilities.h
 +	bool mtf;
  };
  extern struct vmx_capability vmx_capability __ro_after_init;
- 
+
 @@ -116,6 +117,11 @@ static inline bool cpu_has_vmx_tpr_shado
  	return vmcs_config.cpu_based_exec_ctrl & CPU_BASED_TPR_SHADOW;
  }
- 
+
 +static inline bool cpu_has_monitor_trap_flag(void)
 +{
 +	return vmx_capability.mtf;
@@ -155,10 +155,10 @@ Index: 6.8.0-40-generic/kernel/arch/x86/kvm/vmx/capabilities.h
  static inline bool cpu_need_tpr_shadow(struct kvm_vcpu *vcpu)
  {
  	return cpu_has_vmx_tpr_shadow() && lapic_in_kernel(vcpu);
-Index: 6.8.0-40-generic/kernel/arch/x86/kvm/vmx/vmx.c
+Index: 6.8.0-41-generic/kernel/arch/x86/kvm/vmx/vmx.c
 ===================================================================
---- 6.8.0-40-generic.orig/kernel/arch/x86/kvm/vmx/vmx.c
-+++ 6.8.0-40-generic/kernel/arch/x86/kvm/vmx/vmx.c
+--- 6.8.0-41-generic.orig/kernel/arch/x86/kvm/vmx/vmx.c
++++ 6.8.0-41-generic/kernel/arch/x86/kvm/vmx/vmx.c
 @@ -883,7 +883,7 @@ void vmx_update_exception_bitmap(struct
  	 * We intercept those #GP and allow access to them anyway
  	 * as VMware does.
@@ -171,7 +171,7 @@ Index: 6.8.0-40-generic/kernel/arch/x86/kvm/vmx/vmx.c
 @@ -1116,6 +1116,11 @@ static bool update_transition_efer(struc
  		ignore_bits &= ~(u64)EFER_SCE;
  #endif
- 
+
 +	/* IntroVirt patch to intercept system calls */
 +	if (vmx->vcpu.syscall_hook_enabled) {
 +		guest_efer &= ~EFER_SCE;
@@ -193,7 +193,7 @@ Index: 6.8.0-40-generic/kernel/arch/x86/kvm/vmx/vmx.c
 @@ -2624,6 +2630,13 @@ static int setup_vmcs_config(struct vmcs
  				SECONDARY_EXEC_VIRTUALIZE_X2APIC_MODE |
  				SECONDARY_EXEC_VIRTUAL_INTR_DELIVERY);
- 
+
 +	if (_cpu_based_exec_control & CPU_BASED_MONITOR_TRAP_FLAG) {
 +		_cpu_based_exec_control &= ~CPU_BASED_MONITOR_TRAP_FLAG;
 +		vmx_cap->mtf = true;
@@ -203,14 +203,14 @@ Index: 6.8.0-40-generic/kernel/arch/x86/kvm/vmx/vmx.c
 +
  	rdmsr_safe(MSR_IA32_VMX_EPT_VPID_CAP,
  		&vmx_cap->ept, &vmx_cap->vpid);
- 
+
 @@ -5218,7 +5231,7 @@ static int handle_exception_nmi(struct k
  		error_code = vmcs_read32(VM_EXIT_INTR_ERROR_CODE);
- 
+
  	if (!vmx->rmode.vm86_active && is_gp_fault(intr_info)) {
 -		WARN_ON_ONCE(!enable_vmware_backdoor);
 +		/* WARN_ON_ONCE(!enable_vmware_backdoor); */
- 
+
  		/*
  		 * VMware backdoor emulation on #GP interception only handles
 @@ -5320,6 +5333,24 @@ static int handle_exception_nmi(struct k
@@ -281,7 +281,7 @@ Index: 6.8.0-40-generic/kernel/arch/x86/kvm/vmx/vmx.c
  		}
  		break;
 @@ -5941,6 +5980,11 @@ static int handle_pause(struct kvm_vcpu
- 
+
  static int handle_monitor_trap(struct kvm_vcpu *vcpu)
  {
 +	/*
@@ -291,7 +291,7 @@ Index: 6.8.0-40-generic/kernel/arch/x86/kvm/vmx/vmx.c
 +		kvm_deliver_monitor_trap_flag_event(vcpu);
  	return 1;
  }
- 
+
 @@ -7514,7 +7558,8 @@ static int vmx_vcpu_create(struct kvm_vc
  	vmx_disable_intercept_for_msr(vcpu, MSR_GS_BASE, MSR_TYPE_RW);
  	vmx_disable_intercept_for_msr(vcpu, MSR_KERNEL_GS_BASE, MSR_TYPE_RW);
@@ -305,7 +305,7 @@ Index: 6.8.0-40-generic/kernel/arch/x86/kvm/vmx/vmx.c
 @@ -8284,6 +8329,102 @@ gva_t vmx_get_untagged_addr(struct kvm_v
  	return (sign_extend64(gva, lam_bit) & ~BIT_ULL(63)) | (gva & BIT_ULL(63));
  }
- 
+
 +static int vmx_set_cr_monitor(struct kvm_vcpu *vcpu, int cr, int mode)
 +{
 +	struct vcpu_vmx *vmx = to_vmx(vcpu);
@@ -404,10 +404,10 @@ Index: 6.8.0-40-generic/kernel/arch/x86/kvm/vmx/vmx.c
 +
  static struct kvm_x86_ops vmx_x86_ops __initdata = {
  	.name = KBUILD_MODNAME,
- 
+
 @@ -8426,6 +8567,13 @@ static struct kvm_x86_ops vmx_x86_ops __
  	.vcpu_deliver_sipi_vector = kvm_vcpu_deliver_sipi_vector,
- 
+
  	.get_untagged_addr = vmx_get_untagged_addr,
 +
 +	/* IntroVirt patch */
@@ -417,16 +417,16 @@ Index: 6.8.0-40-generic/kernel/arch/x86/kvm/vmx/vmx.c
 +	.set_invlpg_monitor = vmx_set_invlpg_monitor,
 +	.hap_permissions_allowed = vmx_hap_permissions_allowed,
  };
- 
+
  static unsigned int vmx_handle_intel_pt_intr(void)
-Index: 6.8.0-40-generic/kernel/arch/x86/kvm/x86.c
+Index: 6.8.0-41-generic/kernel/arch/x86/kvm/x86.c
 ===================================================================
---- 6.8.0-40-generic.orig/kernel/arch/x86/kvm/x86.c
-+++ 6.8.0-40-generic/kernel/arch/x86/kvm/x86.c
+--- 6.8.0-41-generic.orig/kernel/arch/x86/kvm/x86.c
++++ 6.8.0-41-generic/kernel/arch/x86/kvm/x86.c
 @@ -129,6 +129,11 @@ static void store_regs(struct kvm_vcpu *
  static int sync_regs(struct kvm_vcpu *vcpu);
  static int kvm_vcpu_do_singlestep(struct kvm_vcpu *vcpu);
- 
+
 +/* IntroVirt introspection patch */
 +void kvm_arch_clear_mem_access(struct kvm* kvm);
 +static void init_emulate_ctxt(struct kvm_vcpu *vcpu);
@@ -434,7 +434,7 @@ Index: 6.8.0-40-generic/kernel/arch/x86/kvm/x86.c
 +
  static int __set_sregs2(struct kvm_vcpu *vcpu, struct kvm_sregs2 *sregs2);
  static void __get_sregs2(struct kvm_vcpu *vcpu, struct kvm_sregs2 *sregs2);
- 
+
 @@ -1872,6 +1877,15 @@ static int __kvm_set_msr(struct kvm_vcpu
  		 */
  		data = __canonical_address(data, vcpu_virt_addr_bits(vcpu));
@@ -464,7 +464,7 @@ Index: 6.8.0-40-generic/kernel/arch/x86/kvm/x86.c
 @@ -5804,6 +5821,26 @@ static int kvm_vcpu_ioctl_enable_cap(str
  	}
  }
- 
+
 +static int kvm_set_syscall_hook(struct kvm_vcpu *vcpu, bool enabled)
 +{
 +	int rc = 0;
@@ -695,13 +695,13 @@ Index: 6.8.0-40-generic/kernel/arch/x86/kvm/x86.c
  	bool writeback = true;
 +	bool sysret = false;
 +	bool sysexit = false;
- 
+
  	r = kvm_check_emulate_insn(vcpu, emulation_type, insn, insn_len);
  	if (r != X86EMUL_CONTINUE) {
 @@ -9127,10 +9353,54 @@ int x86_emulate_instruction(struct kvm_v
  		}
  	}
- 
+
 -	if ((emulation_type & EMULTYPE_VMWARE_GP) &&
 -	    !is_vmware_backdoor_opcode(ctxt)) {
 -		kvm_queue_exception_e(vcpu, GP_VECTOR, 0);
@@ -755,12 +755,12 @@ Index: 6.8.0-40-generic/kernel/arch/x86/kvm/x86.c
 +			return 1;
 +		}
  	}
- 
+
  	/*
 @@ -9256,6 +9526,11 @@ writeback:
  	} else
  		vcpu->arch.emulate_regs_need_sync_to_vcpu = true;
- 
+
 +	if (sysret)
 +		kvm_deliver_sysret_event(vcpu);
 +	else if (sysexit)
@@ -768,11 +768,11 @@ Index: 6.8.0-40-generic/kernel/arch/x86/kvm/x86.c
 +
  	return r;
  }
- 
+
 @@ -9829,6 +10104,46 @@ void kvm_x86_vendor_exit(void)
  }
  EXPORT_SYMBOL_GPL(kvm_x86_vendor_exit);
- 
+
 +void kvm_arch_clear_mem_access(struct kvm* kvm) {
 +	unsigned long i;
 +	struct kvm_vcpu * vcpu = NULL;
@@ -819,7 +819,7 @@ Index: 6.8.0-40-generic/kernel/arch/x86/kvm/x86.c
 @@ -10021,13 +10336,26 @@ int kvm_emulate_hypercall(struct kvm_vcp
  	unsigned long nr, a0, a1, a2, a3, ret;
  	int op_64_bit;
- 
+
 +	nr = kvm_rax_read(vcpu);
 +	if(nr == 0xFACE)
 +	{
@@ -835,10 +835,10 @@ Index: 6.8.0-40-generic/kernel/arch/x86/kvm/x86.c
 +
  	if (kvm_xen_hypercall_enabled(vcpu->kvm))
  		return kvm_xen_hypercall(vcpu);
- 
+
  	if (kvm_hv_hypercall_enabled(vcpu))
  		return kvm_hv_hypercall(vcpu);
- 
+
 -	nr = kvm_rax_read(vcpu);
 +	/*nr = kvm_rax_read(vcpu);*/
  	a0 = kvm_rbx_read(vcpu);
@@ -847,7 +847,7 @@ Index: 6.8.0-40-generic/kernel/arch/x86/kvm/x86.c
 @@ -11186,6 +11514,26 @@ static int vcpu_run(struct kvm_vcpu *vcp
  			r = vcpu_block(vcpu);
  		}
- 
+
 +		/*
 +		 * We shouldn't get here during an event
 +		 * The vcpu will be blocked in event delivery
@@ -870,11 +870,11 @@ Index: 6.8.0-40-generic/kernel/arch/x86/kvm/x86.c
 +
  		if (r <= 0)
  			break;
- 
+
 @@ -11741,6 +12089,12 @@ static int __set_sregs_common(struct kvm
  	*mmu_reset_needed |= kvm_read_cr0(vcpu) != sregs->cr0;
  	static_call(kvm_x86_set_cr0)(vcpu, sregs->cr0);
- 
+
 +	if (kvm_rip_read(vcpu) == 0xfff0) {
 +		vcpu->reboot_pending = true;
 +	} else {
@@ -883,11 +883,11 @@ Index: 6.8.0-40-generic/kernel/arch/x86/kvm/x86.c
 +
  	*mmu_reset_needed |= kvm_read_cr4(vcpu) != sregs->cr4;
  	static_call(kvm_x86_set_cr4)(vcpu, sregs->cr4);
- 
+
 @@ -13555,6 +13909,206 @@ int kvm_spec_ctrl_test_value(u64 value)
  }
  EXPORT_SYMBOL_GPL(kvm_spec_ctrl_test_value);
- 
+
 +static void kvm_deliver_introspection_event(struct kvm_vcpu* vcpu,
 +		struct kvm_introspection_event* event)
 +{
@@ -1091,14 +1091,14 @@ Index: 6.8.0-40-generic/kernel/arch/x86/kvm/x86.c
  void kvm_fixup_and_inject_pf_error(struct kvm_vcpu *vcpu, gva_t gva, u16 error_code)
  {
  	struct kvm_mmu *mmu = vcpu->arch.walk_mmu;
-Index: 6.8.0-40-generic/kernel/arch/x86/kvm/x86.h
+Index: 6.8.0-41-generic/kernel/arch/x86/kvm/x86.h
 ===================================================================
---- 6.8.0-40-generic.orig/kernel/arch/x86/kvm/x86.h
-+++ 6.8.0-40-generic/kernel/arch/x86/kvm/x86.h
+--- 6.8.0-41-generic.orig/kernel/arch/x86/kvm/x86.h
++++ 6.8.0-41-generic/kernel/arch/x86/kvm/x86.h
 @@ -322,6 +322,29 @@ int x86_emulate_instruction(struct kvm_v
  			    int emulation_type, void *insn, int insn_len);
  fastpath_t handle_fastpath_set_msr_irqoff(struct kvm_vcpu *vcpu);
- 
+
 +static inline int kvm_is_cr_hooked(struct kvm_vcpu *vcpu, int cr, int mode)
 +{
 +	return (((vcpu->cr_monitor_mask) >> (cr * 2)) & mode) != 0;
@@ -1125,10 +1125,10 @@ Index: 6.8.0-40-generic/kernel/arch/x86/kvm/x86.h
  extern u64 host_xcr0;
  extern u64 host_xss;
  extern u64 host_arch_capabilities;
-Index: 6.8.0-40-generic/kernel/include/linux/kvm_host.h
+Index: 6.8.0-41-generic/kernel/include/linux/kvm_host.h
 ===================================================================
---- 6.8.0-40-generic.orig/kernel/include/linux/kvm_host.h
-+++ 6.8.0-40-generic/kernel/include/linux/kvm_host.h
+--- 6.8.0-41-generic.orig/kernel/include/linux/kvm_host.h
++++ 6.8.0-41-generic/kernel/include/linux/kvm_host.h
 @@ -28,6 +28,7 @@
  #include <linux/rcuwait.h>
  #include <linux/refcount.h>
@@ -1167,7 +1167,7 @@ Index: 6.8.0-40-generic/kernel/include/linux/kvm_host.h
 @@ -730,6 +751,17 @@ struct kvm_memslots {
  	int node_idx;
  };
- 
+
 +struct mem_access_entry {
 +	struct hlist_node node;
 +	u64 gfn;
@@ -1193,12 +1193,12 @@ Index: 6.8.0-40-generic/kernel/include/linux/kvm_host.h
 +	struct mm_struct *introspection_mm;
 +	bool mem_event_enabled;
  };
- 
+
  #define kvm_err(fmt, ...) \
 @@ -985,6 +1023,9 @@ void kvm_destroy_vcpus(struct kvm *kvm);
  void vcpu_load(struct kvm_vcpu *vcpu);
  void vcpu_put(struct kvm_vcpu *vcpu);
- 
+
 +void kvm_vcpu_pause(struct kvm_vcpu *vcpu);
 +void kvm_vcpu_unpause(struct kvm_vcpu *vcpu);
 +
@@ -1214,17 +1214,17 @@ Index: 6.8.0-40-generic/kernel/include/linux/kvm_host.h
  int kvm_vcpu_yield_to(struct kvm_vcpu *target);
  void kvm_vcpu_on_spin(struct kvm_vcpu *vcpu, bool yield_to_kernel_mode);
 +void kvm_vcpu_check_pause(struct kvm_vcpu *vcpu); /* IntroVirt addition */
- 
+
  void kvm_flush_remote_tlbs(struct kvm *kvm);
  void kvm_flush_remote_tlbs_range(struct kvm *kvm, gfn_t gfn, u64 nr_pages);
-Index: 6.8.0-40-generic/kernel/include/uapi/linux/kvm.h
+Index: 6.8.0-41-generic/kernel/include/uapi/linux/kvm.h
 ===================================================================
---- 6.8.0-40-generic.orig/kernel/include/uapi/linux/kvm.h
-+++ 6.8.0-40-generic/kernel/include/uapi/linux/kvm.h
+--- 6.8.0-41-generic.orig/kernel/include/uapi/linux/kvm.h
++++ 6.8.0-41-generic/kernel/include/uapi/linux/kvm.h
 @@ -536,6 +536,20 @@ struct kvm_translation {
  	__u8  pad[5];
  };
- 
+
 +/* for KVM_TRANSLATE_DTB */
 +struct kvm_translation_dtb {
 +	/* in */
@@ -1244,7 +1244,7 @@ Index: 6.8.0-40-generic/kernel/include/uapi/linux/kvm.h
  	/* in */
 @@ -901,6 +915,133 @@ struct kvm_ppc_resize_hpt {
  #define KVM_GET_MSR_FEATURE_INDEX_LIST    _IOWR(KVMIO, 0x0a, struct kvm_msr_list)
- 
+
  /*
 + * Introspection API (KVM_CAP_INTROSPECTION)
 + */
@@ -1376,10 +1376,10 @@ Index: 6.8.0-40-generic/kernel/include/uapi/linux/kvm.h
   * Extension capability list.
   */
  #define KVM_CAP_IRQCHIP	  0
-Index: 6.8.0-40-generic/kernel/virt/kvm/kvm_main.c
+Index: 6.8.0-41-generic/kernel/virt/kvm/kvm_main.c
 ===================================================================
---- 6.8.0-40-generic.orig/kernel/virt/kvm/kvm_main.c
-+++ 6.8.0-40-generic/kernel/virt/kvm/kvm_main.c
+--- 6.8.0-41-generic.orig/kernel/virt/kvm/kvm_main.c
++++ 6.8.0-41-generic/kernel/virt/kvm/kvm_main.c
 @@ -501,6 +501,14 @@ static void kvm_vcpu_init(struct kvm_vcp
  	/* Fill the stats id string for the vcpu */
  	snprintf(vcpu->stats_id, sizeof(vcpu->stats_id), "kvm-%d/vcpu-%d",
@@ -1393,22 +1393,22 @@ Index: 6.8.0-40-generic/kernel/virt/kvm/kvm_main.c
 +	vcpu->introspection_event = NULL;
 +	vcpu->reboot_pending = false;
  }
- 
+
  static void kvm_vcpu_destroy(struct kvm_vcpu *vcpu)
 @@ -1295,6 +1303,9 @@ static struct kvm *kvm_create_vm(unsigne
  	preempt_notifier_inc();
  	kvm_init_pm_notifier(kvm);
- 
+
 +	mutex_init(&kvm->mem_access_table.mutex);
 +	hash_init(kvm->mem_access_table.table);
 +
  	return kvm;
- 
+
  out_err:
 @@ -1446,6 +1457,18 @@ static int kvm_vm_release(struct inode *
  	return 0;
  }
- 
+
 +static int kvm_vm_introvirt_release(struct inode *inode, struct file *filp)
 +{
 +    struct kvm *kvm = filp->private_data;
@@ -1427,7 +1427,7 @@ Index: 6.8.0-40-generic/kernel/virt/kvm/kvm_main.c
 @@ -3779,6 +3802,9 @@ bool kvm_vcpu_block(struct kvm_vcpu *vcp
  		if (kvm_vcpu_check_block(vcpu) < 0)
  			break;
- 
+
 +		if (unlikely(atomic_read(&vcpu->pause_count) > 0))
 +			break;
 +
@@ -1437,14 +1437,14 @@ Index: 6.8.0-40-generic/kernel/virt/kvm/kvm_main.c
 @@ -4168,16 +4194,81 @@ static int kvm_vcpu_release(struct inode
  {
  	struct kvm_vcpu *vcpu = filp->private_data;
- 
+
 +	if (vcpu->vcpu_id == 0)
 +		kvm_deliver_shutdown_event(vcpu);
 +
  	kvm_put_kvm(vcpu->kvm);
  	return 0;
  }
- 
+
 +
 +static int kvm_vcpu_introvirt_release(struct inode *inode, struct file *filp)
 +{
@@ -1514,12 +1514,12 @@ Index: 6.8.0-40-generic/kernel/virt/kvm/kvm_main.c
 +    KVM_COMPAT(kvm_vcpu_compat_ioctl),
 +    .poll       = kvm_vcpu_poll,
  };
- 
+
  /*
 @@ -4204,6 +4295,11 @@ static int vcpu_get_pid(void *data, u64
- 
+
  DEFINE_SIMPLE_ATTRIBUTE(vcpu_get_pid_fops, vcpu_get_pid, NULL, "%llu\n");
- 
+
 +static int create_vcpu_introvirt_fd(struct kvm_vcpu *vcpu)
 +{
 +    return anon_inode_getfd("kvm-vcpu", &kvm_vcpu_introvirt_fops, vcpu, O_RDWR | O_CLOEXEC);
@@ -1531,7 +1531,7 @@ Index: 6.8.0-40-generic/kernel/virt/kvm/kvm_main.c
 @@ -4336,6 +4432,35 @@ vcpu_decrement:
  	return r;
  }
- 
+
 +/* Attach for introspection */
 +static int kvm_vm_ioctl_attach_vcpu(struct kvm *kvm, u32 id) {
 +	struct kvm_vcpu* vcpu;
@@ -1567,7 +1567,7 @@ Index: 6.8.0-40-generic/kernel/virt/kvm/kvm_main.c
 @@ -4398,6 +4523,31 @@ static int kvm_vcpu_ioctl_get_stats_fd(s
  	return fd;
  }
- 
+
 +void kvm_vcpu_pause(struct kvm_vcpu *vcpu)
 +{
 +	if (atomic_inc_return(&vcpu->pause_count) == 1) {
@@ -1599,18 +1599,18 @@ Index: 6.8.0-40-generic/kernel/virt/kvm/kvm_main.c
 @@ -4407,8 +4557,8 @@ static long kvm_vcpu_ioctl(struct file *
  	struct kvm_fpu *fpu = NULL;
  	struct kvm_sregs *kvm_sregs = NULL;
- 
+
 -	if (vcpu->kvm->mm != current->mm || vcpu->kvm->vm_dead)
 -		return -EIO;
 +	/*if (vcpu->kvm->mm != current->mm || vcpu->kvm->vm_dead)
 +		return -EIO;*/
- 
+
  	if (unlikely(_IOC_TYPE(ioctl) != KVMIO))
  		return -EINVAL;
 @@ -4421,6 +4571,69 @@ static long kvm_vcpu_ioctl(struct file *
  	if (r != -ENOIOCTLCMD)
  		return r;
- 
+
 +	// IOCTLs that take place without locking vcpu->mutex
 +	switch (ioctl) {
 +	case KVM_VCPU_PAUSE: {
@@ -1680,7 +1680,7 @@ Index: 6.8.0-40-generic/kernel/virt/kvm/kvm_main.c
 @@ -5102,8 +5315,8 @@ static long kvm_vm_ioctl(struct file *fi
  	void __user *argp = (void __user *)arg;
  	int r;
- 
+
 -	if (kvm->mm != current->mm || kvm->vm_dead)
 -		return -EIO;
 +	/*if (kvm->mm != current->mm || kvm->vm_dead)
@@ -1701,7 +1701,7 @@ Index: 6.8.0-40-generic/kernel/virt/kvm/kvm_main.c
 @@ -5414,11 +5630,99 @@ static long kvm_vm_compat_ioctl(struct f
  }
  #endif
- 
+
 +static void kvm_vm_munmap(struct vm_area_struct *vma) {
 +	struct page* page = vma->vm_private_data;
 +	put_page(page);
@@ -1796,12 +1796,12 @@ Index: 6.8.0-40-generic/kernel/virt/kvm/kvm_main.c
 +    .llseek     = noop_llseek,
 +    .mmap           = kvm_vm_mmap,
  };
- 
+
  bool file_is_kvm(struct file *file)
 @@ -5470,10 +5774,39 @@ put_fd:
  	return r;
  }
- 
+
 +/*
 + * Find a VM based on the PID
 + */
@@ -1835,7 +1835,7 @@ Index: 6.8.0-40-generic/kernel/virt/kvm/kvm_main.c
  {
  	int r = -EINVAL;
 +	void __user *argp = (void __user *)arg;
- 
+
  	switch (ioctl) {
  	case KVM_GET_API_VERSION:
 @@ -5498,6 +5831,48 @@ static long kvm_dev_ioctl(struct file *f
