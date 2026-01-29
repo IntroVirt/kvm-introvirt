@@ -70,6 +70,7 @@ jobs:
           KERNEL_VERSION_FULL=${{ matrix.config.kernel }} \
           LSB_CODENAME=${{ matrix.config.codename}} \
           LSB_RELEASE=${{ matrix.config.release}} \
+          USE_KERNEL_CONFIG=/usr/src/linux-headers-${{ matrix.config.kernel }}/.config \
           ./configure
 
           make -j$(nproc) package
