@@ -1,38 +1,81 @@
-#
-# Disabling CI for now - need a better way to run CI build tests against supported kernels
-#
-#name: CI Tests
-#
-#on:
-#  push:
-#    paths-ignore: ['**.md']
-#  pull_request:
-#    paths-ignore: ['**.md']
-#
-#jobs:
-#  Kernel_Module:
-#    runs-on: ubuntu-20.04
-#    steps:
-#      - uses: actions/checkout@v2
-#        with:
-#          path: kvm-introvirt
-#      - name: Setup
-#        run: |
-#          sudo apt-get update
-#          sudo apt-get install -y bc devscripts quilt git flex bison \
-#            libssl-dev libelf-dev debhelper
-#        shell: bash
-#      - name: Validate Kernel Module Build
-#        run: |
-#          cd kvm-introvirt
-#          ./configure
-#          source ./.build_vars
-#          sudo apt-get install -y linux-headers-${KERNEL_VERSION}${KERNEL_FLAVOR} \
-#            linux-modules-${KERNEL_VERSION}${KERNEL_FLAVOR}
-#          dpkg-buildpackage -us -uc -j
-#        shell: bash
-#      - name: Archive debian packages
-#        uses: actions/upload-artifact@v3
-#        with:
-#          name: kvm-introvirt
-#          path: kvm-introvirt-*.deb
+name: CI Tests
+
+on:
+  push:
+    paths-ignore: ['**.md']
+    branches:
+        - main
+  pull_request:
+    paths-ignore: ['**.md']
+    branches:
+      - main
+
+jobs:
+  # Validate code formatting
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+        shell: bash
+      - name: Validate Shell Scripts
+        run: |
+          mapfile -t scripts < <(find . -iname "*.sh" -or -iname "configure")
+          if ! shellcheck "${scripts[@]}"; then
+              echo "You must fix shell script issues before submitting a pull request"
+              echo ""
+              exit 1
+          fi
+          echo "Your shell scripts are looking real good!"
+        shell: bash
+
+  build:
+    runs-on: ${{ matrix.config.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - { os: ubuntu-22.04, kernel: 6.5.0-35-generic, codename: jammy, release: 22.04 }
+          - { os: ubuntu-22.04, kernel: 6.8.0-40-generic, codename: jammy, release: 22.04 }
+          - { os: ubuntu-24.04, kernel: 6.8.0-41-generic, codename: noble, release: 24.04 }
+          - { os: ubuntu-24.04, kernel: 6.8.0-90-generic, codename: noble, release: 24.04 }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Install build deps
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc devscripts quilt git flex bison \
+            libssl-dev libelf-dev debhelper libncurses-dev gawk openssl \
+            dkms libudev-dev libpci-dev libiberty-dev autoconf llvm \
+            linux-headers-${{ matrix.config.kernel }} \
+            linux-modules-${{ matrix.config.kernel }}
+
+          # Enable source repos to get kernel source
+          sudo sed -i '/^#\s*deb-src /s/^# *//' /etc/apt/sources.list
+          sudo sed -Ei 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get update
+        shell: bash
+      - name: Validate Kernel Module Build
+        run: |
+          cd kvm-introvirt
+
+          # Configure the build with the appropriate kernel version
+          KERNEL_VERSION_FULL=${{ matrix.config.kernel }} \
+          LSB_CODENAME=${{ matrix.config.codename}} \
+          LSB_RELEASE=${{ matrix.config.release}} \
+          ./configure
+
+          make -j$(nproc) package
+        shell: bash
+      - name: Archive debian packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: kvm-introvirt
+          path: kvm-introvirt-*.deb

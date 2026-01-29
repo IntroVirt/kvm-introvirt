@@ -34,6 +34,7 @@ If you cannot find a deb package that matches your OS or kernel version, see bel
     ```
 
 1. Clone and build the module (assuming the folder exists for your kernel)
+    * You can install an older supported kernel through `apt`, and boot into it if needed.
 
     ```shell
     git clone https://github.com/IntroVirt/kvm-introvirt.git
@@ -113,7 +114,7 @@ quilt refresh
 quilt rename kvm-introvirt-hwe-$(uname -r)
 
 # Generate the header text for the quilt patch
-cat << EOF 
+cat << EOF
 Description: KVM IntroVirt patch for Ubuntu HWE kernel $(uname -r)
  The KVM IntroVirt patch adds introspection support to KVM. This allows
  for inspection of virtual machine memory and manipulation of running processes in-guest.
