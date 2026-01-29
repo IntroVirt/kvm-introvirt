@@ -78,5 +78,5 @@ jobs:
       - name: Archive debian packages
         uses: actions/upload-artifact@v4
         with:
-          name: kvm-introvirt
-          path: kvm-introvirt-*.deb
+          name: kvm-introvirt-${{ matrix.config.kernel }}.${{ matrix.config.release }}
+          path: dist/*.deb
