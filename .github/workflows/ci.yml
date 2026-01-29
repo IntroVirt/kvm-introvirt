@@ -71,8 +71,11 @@ jobs:
           LSB_CODENAME=${{ matrix.config.codename}} \
           LSB_RELEASE=${{ matrix.config.release}} \
           USE_KERNEL_CONFIG=/usr/src/linux-headers-${{ matrix.config.kernel }}/.config \
-          ./configure
-
+          ./configure || { test $? -eq 2 && ret=2 && exit 0 || exit 1; }
+          if [[ $ret -eq 2 ]]; then
+              echo "Cannot automate this kernel build. The kernel source is not available in apt for this version!"
+              exit 0
+          fi
           make -j$(nproc) package
         shell: bash
       - name: Archive debian packages

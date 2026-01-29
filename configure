@@ -37,7 +37,7 @@ if [[ ! -d "./kernel" ]]; then
         echo "Available versions:"
         apt-cache showsrc linux | grep '^Version:'
         popd > /dev/null || exit 1
-        exit 0  # So CI doesn't fail
+        exit 2  # We handle ret code 2 differently so CI doesn't fail
     fi
     mv linux*"$(echo "${_KERNEL_VERSION_FULL}" | cut -d- -f 1)/" kernel
     rm -f linux*.dsc linux*.tar.gz linux*.diff.gz
