@@ -1,5 +1,10 @@
 # kvm-introvirt
 
+[![Discord](https://dcbadge.limes.pink/api/server/https://discord.gg/YSdGvAhSmH?style=flat)](https://discord.gg/YSdGvAhSmH)
+[![GitHub release (latest by date)](https://img.shields.io/github/v/release/IntroVirt/kvm-introvirt?color=brightgreen)](https://github.com/IntroVirt/kvm-introvirt/releases/latest)
+[![CI Tests](https://github.com/IntroVirt/kvm-introvirt/actions/workflows/ci.yml/badge.svg)](https://github.com/IntroVirt/kvm-introvirt/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
 IntroVirt KVM module. Intel CPUs have full support. AMD CPUs are lacking support for breakpoints but syscall tracing should work.
 
 ## Installation Instructions
