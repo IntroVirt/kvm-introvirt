@@ -59,13 +59,13 @@ jobs:
 
           # Enable source repos to get kernel source
           sudo sed -i '/^#\s*deb-src /s/^# *//' /etc/apt/sources.list
-          sudo sed -Ei 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+          if [[ -f /etc/apt/sources.list.d/ubuntu.sources ]]; then
+              sudo sed -Ei 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+          fi
           sudo apt-get update
         shell: bash
       - name: Validate Kernel Module Build
         run: |
-          cd kvm-introvirt
-
           # Configure the build with the appropriate kernel version
           KERNEL_VERSION_FULL=${{ matrix.config.kernel }} \
           LSB_CODENAME=${{ matrix.config.codename}} \
