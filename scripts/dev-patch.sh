@@ -2,6 +2,7 @@
 
 # Helper script to download kernel source and apply the quilt patch for development
 # Assumes deb-src entries are in /etc/apt/sources.list or ubuntu.sources
+# Run from the root of the repo
 
 if [[ $# -ne 1 ]]; then
     echo "Usage: $0 <patch/dir>"
@@ -32,14 +33,33 @@ if [[ ! -d "./kernel" ]]; then
         echo "Available versions listed are:"
         apt-cache showsrc linux | grep '^Version:'
 
-        REPO_URL="git://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/${CODENAME}"
-        GIT_TAG="Ubuntu-${FULL_VER}"
+        REPO_URL="git://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/${_LSB_CODENAME}"
 
-        echo "Falling back to Git clone: ${REPO_URL} at tag ${GIT_TAG}"
-        if git clone --depth 1 --branch "${GIT_TAG}" "${REPO_URL}" ./kernel; then
-            echo "Successfully cloned kernel from Git at tag ${GIT_TAG}"
-        else
-            echo "Failed to find tag ${GIT_TAG} at ${REPO_URL}"
+        # Gotta find it somewhere
+        FALLBACK_TAG=$(git ls-remote --tags git://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/noble | grep "${FULL_VER%~*}" | cut -d/ -f3- | head -n1)
+
+        # Create a few tags to try
+        GIT_TAGS=(
+            "Ubuntu-hwe-${FULL_VER}"
+            "Ubuntu-hwe-${FULL_VER%~*}"
+            "Ubuntu-${FULL_VER}"
+            "Ubuntu-${FULL_VER%~*}"
+            "Ubuntu-${_KERNEL_VERSION_FULL}"
+            "Ubuntu-hwe-${_KERNEL_VERSION_FULL}"
+            "${FALLBACK_TAG}"
+        )
+        echo "Falling back to Git clone: ${REPO_URL}"
+        for GIT_TAG in "${GIT_TAGS[@]}"; do
+            echo "Trying to clone tag ${GIT_TAG}..."
+            if git clone --depth 1 --branch "${GIT_TAG}" "${REPO_URL}" ./kernel; then
+                echo "Successfully cloned kernel from Git at tag ${GIT_TAG}"
+                break
+            else
+                echo "Failed to find tag ${GIT_TAG} at ${REPO_URL}"
+            fi
+        done
+        if [[ ! -d "./kernel" ]]; then
+            echo "Failed to download kernel source from Git as well. Cannot continue."
             popd > /dev/null || exit 1
             exit 2
         fi

@@ -38,13 +38,32 @@ if [[ ! -d "./kernel" ]]; then
         apt-cache showsrc linux | grep '^Version:'
 
         REPO_URL="git://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/${_LSB_CODENAME}"
-        GIT_TAG="Ubuntu-${FULL_VER}"
 
-        echo "Falling back to Git clone: ${REPO_URL} at tag ${GIT_TAG}"
-        if git clone --depth 1 --branch "${GIT_TAG}" "${REPO_URL}" ./kernel; then
-            echo "Successfully cloned kernel from Git at tag ${GIT_TAG}"
-        else
-            echo "Failed to find tag ${GIT_TAG} at ${REPO_URL}"
+        # Gotta find it somewhere
+        FALLBACK_TAG=$(git ls-remote --tags git://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/noble | grep "${FULL_VER%~*}" | cut -d/ -f3- | head -n1)
+
+        # Create a few tags to try
+        GIT_TAGS=(
+            "Ubuntu-hwe-${FULL_VER}"
+            "Ubuntu-hwe-${FULL_VER%~*}"
+            "Ubuntu-${FULL_VER}"
+            "Ubuntu-${FULL_VER%~*}"
+            "Ubuntu-${_KERNEL_VERSION_FULL}"
+            "Ubuntu-hwe-${_KERNEL_VERSION_FULL}"
+            "${FALLBACK_TAG}"
+        )
+        echo "Falling back to Git clone: ${REPO_URL}"
+        for GIT_TAG in "${GIT_TAGS[@]}"; do
+            echo "Trying to clone tag ${GIT_TAG}..."
+            if git clone --depth 1 --branch "${GIT_TAG}" "${REPO_URL}" ./kernel; then
+                echo "Successfully cloned kernel from Git at tag ${GIT_TAG}"
+                break
+            else
+                echo "Failed to find tag ${GIT_TAG} at ${REPO_URL}"
+            fi
+        done
+        if [[ ! -d "./kernel" ]]; then
+            echo "Failed to download kernel source from Git as well. Cannot continue."
             popd > /dev/null || exit 1
             exit 2
         fi
@@ -92,7 +111,7 @@ truncate -s0 config.mk
     echo "KERNEL_SYMVERS_FILE=/usr/src/linux-headers-${_KERNEL_VERSION_FULL}/Module.symvers"
     echo "PATCH_VERSION=${PATCH_VERSION}"
     echo "INSTALL_DIR=/lib/modules/${_KERNEL_VERSION_FULL}/updates/introvirt/"
-    echo "DEB_NAME=kvm-introvirt-${KERNEL_VERSION_FULL}.${LSB_RELEASE}-${PATCH_VERSION}.deb"
+    echo "DEB_NAME=kvm-introvirt-${KERNEL_VERSION_FULL}.${_LSB_RELEASE}-${PATCH_VERSION}.deb"
     echo "KERNEL_VERSION_FULL=${KERNEL_VERSION_FULL}"
 } >> config.mk
 
@@ -109,7 +128,7 @@ sed -i "s/KERNEL_VERSION_FULL=\"<<<REPLACED_BY_CONFIGURE>>>\"/KERNEL_VERSION_FUL
 # Build the changelog
 truncate -s0 debpkg/DEBIAN/changelog
 cat << EOF > debpkg/DEBIAN/changelog
-kvm-introvirt (${KERNEL_VERSION_FULL}.${LSB_RELEASE}-${PATCH_VERSION}~${LSB_CODENAME}1) ${LSB_CODENAME}; urgency=medium
+kvm-introvirt (${KERNEL_VERSION_FULL}.${_LSB_RELEASE}-${PATCH_VERSION}~${_LSB_CODENAME}1) ${_LSB_CODENAME}; urgency=medium
 
   * kvm-introvirt patch ${PATCH_VERSION} for ${KERNEL_VERSION_FULL}
 

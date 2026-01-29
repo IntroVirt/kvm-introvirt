@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # Helper script to enable deb-src packages
+# Run from the root of the repo
 
 if [[ $EUID -ne 0 ]]; then
     echo "This script must be run as root"

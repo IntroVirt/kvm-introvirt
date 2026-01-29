@@ -1,0 +1,94 @@
+name: Create Release
+
+on:
+  push:
+    tags:
+    - 'v*'
+
+jobs:
+  # Build and publish release assets
+  build:
+    runs-on: ${{ matrix.config.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - { os: ubuntu-22.04, kernel: 6.5.0-35-generic, codename: jammy, release: 22.04 }
+          - { os: ubuntu-22.04, kernel: 6.8.0-40-generic, codename: jammy, release: 22.04 }
+          - { os: ubuntu-24.04, kernel: 6.8.0-41-generic, codename: noble, release: 24.04 }
+          - { os: ubuntu-24.04, kernel: 6.8.0-90-generic, codename: noble, release: 24.04 }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Install build deps
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc devscripts quilt git flex bison \
+            libssl-dev libelf-dev debhelper libncurses-dev gawk openssl \
+            dkms libudev-dev libpci-dev libiberty-dev autoconf llvm \
+            linux-headers-${{ matrix.config.kernel }} \
+            linux-modules-${{ matrix.config.kernel }}
+
+          # Enable source repos to get kernel source
+          sudo sed -i '/^#\s*deb-src /s/^# *//' /etc/apt/sources.list
+          if [[ -f /etc/apt/sources.list.d/ubuntu.sources ]]; then
+              sudo sed -Ei 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+          fi
+          sudo apt-get update
+        shell: bash
+      - name: Validate Kernel Module Build
+        run: |
+          # Configure the build with the appropriate kernel version
+          KERNEL_VERSION_FULL=${{ matrix.config.kernel }} \
+          LSB_CODENAME=${{ matrix.config.codename}} \
+          LSB_RELEASE=${{ matrix.config.release}} \
+          USE_KERNEL_CONFIG=/usr/src/linux-headers-${{ matrix.config.kernel }}/.config \
+          ./configure || { test $? -eq 2 && ret=2 && exit 0 || exit 1; }
+          if [[ $ret -eq 2 ]]; then
+              echo "Cannot automate this kernel build. Could not find kernel source in apt or git for this version!"
+              exit 0
+          fi
+          make -j$(nproc) package
+        shell: bash
+      - name: Archive debian packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: kvm-introvirt-${{ matrix.config.kernel }}.${{ matrix.config.release }}
+          path: dist/*.deb
+
+  # Create the release
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Download the built debs from the build job
+      - name: Download Release Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-debs
+          pattern: kvm-introvirt-*
+
+      # Create and upload the debs to a new release
+      - name: Upload Release Asset
+        id: upload-release-asset
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ls -lah ./all-debs
+          cd ./all-debs
+          for rel in kvm-introvirt-*; do
+              echo "Zipping ${rel}"
+              zip -r "${rel}.zip" "${rel}"
+          done
+
+          echo "Uploading release assets"
+          gh release create ${{ github.ref_name }} \
+            --title "Release ${{ github.ref_name }}" \
+            --draft \
+            *.zip
+        shell: bash

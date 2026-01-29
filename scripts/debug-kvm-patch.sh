@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # Helper to build an insert modified KVM kernel module for debugging
+# Run from the root of the repo
 
 if [[ $# -ne 2 ]]; then
     echo "Usage: $0 <path-to-kernel-source> <path-to-signing-key-dir>"
