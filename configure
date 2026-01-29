@@ -42,7 +42,7 @@ fi
 popd > /dev/null || exit 1
 
 # Determine the kernel config we should use
-if [[ -z "${_USE_KERNEL_CONFIG}" -o ! -f "${_USE_KERNEL_CONFIG}" ]]; then
+if [[ -z "${_USE_KERNEL_CONFIG}" || ! -f "${_USE_KERNEL_CONFIG}" ]]; then
     if [[ -f "/boot/config-${_KERNEL_VERSION_FULL}" ]]; then
         echo "Using running kernel config from /boot"
         USE_KERNEL_CONFIG="/boot/config-${_KERNEL_VERSION_FULL}"
