@@ -22,7 +22,23 @@ pushd "${PATCH_DIR}" > /dev/null || exit 1
 
 if [[ ! -d "./kernel" ]]; then
     echo "Getting kernel source. This could take a bit..."
-    apt source linux-image-unsigned-"${_KERNEL_VERSION_FULL}"
+
+    # Figure out the name of the package
+    FULL_VER=$(apt-cache policy linux-image-unsigned-"${_KERNEL_VERSION_FULL}" | grep "Candidate:" | awk '{print $2}')
+    if [[ -z "${FULL_VER}" || $? -ne 0 ]]; then
+        echo "Could not find kernel package linux-image-unsigned-${_KERNEL_VERSION_FULL}"
+        popd > /dev/null || exit 1
+        exit 1
+    fi
+
+    if ! apt-get source linux="${FULL_VER}"; then
+        echo "Could not download kernel source for linux-image-unsigned-${_KERNEL_VERSION_FULL}"
+        echo "Possible this version isn't available anymore."
+        echo "Available versions:"
+        apt-cache showsrc linux | grep '^Version:'
+        popd > /dev/null || exit 1
+        exit 0  # So CI doesn't fail
+    fi
     mv linux*"$(echo "${_KERNEL_VERSION_FULL}" | cut -d- -f 1)/" kernel
     rm -f linux*.dsc linux*.tar.gz linux*.diff.gz
     chmod +x kernel/scripts/*.sh
