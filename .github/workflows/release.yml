@@ -29,6 +29,7 @@ jobs:
           sudo apt-get install -y bc devscripts quilt git flex bison \
             libssl-dev libelf-dev debhelper libncurses-dev gawk openssl \
             dkms libudev-dev libpci-dev libiberty-dev autoconf llvm \
+            libdw-dev dwarves libdwarf-dev \
             linux-headers-${{ matrix.config.kernel }} \
             linux-modules-${{ matrix.config.kernel }}
 

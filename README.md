@@ -30,7 +30,7 @@ If you cannot find a deb package that matches your OS or kernel version, see bel
     sudo apt-get install -y \
         bc devscripts quilt git flex bison libssl-dev libelf-dev debhelper \
         libncurses-dev gawk openssl dkms libudev-dev libpci-dev libiberty-dev \
-        autoconf llvm \
+        libdw-dev dwarves libdwarf-dev autoconf llvm \
         linux-headers-$(uname -r) \
         linux-modules-$(uname -r)
 

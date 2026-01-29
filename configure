@@ -91,13 +91,13 @@ popd > /dev/null || exit 1
 if [[ -z "${_USE_KERNEL_CONFIG}" || ! -f "${_USE_KERNEL_CONFIG}" ]]; then
     if [[ -f "/boot/config-${_KERNEL_VERSION_FULL}" ]]; then
         echo "Using running kernel config from /boot"
-        USE_KERNEL_CONFIG="/boot/config-${_KERNEL_VERSION_FULL}"
+        _USE_KERNEL_CONFIG="/boot/config-${_KERNEL_VERSION_FULL}"
     elif [[ -f "/usr/src/linux-headers-${_KERNEL_VERSION_FULL}/.config" ]]; then
         echo "Using kernel config from linux-headers"
-        USE_KERNEL_CONFIG="/usr/src/linux-headers-${_KERNEL_VERSION_FULL}/.config"
+        _USE_KERNEL_CONFIG="/usr/src/linux-headers-${_KERNEL_VERSION_FULL}/.config"
     else
         echo "Using kernel config from patch directory"
-        USE_KERNEL_CONFIG="${PATCH_DIR}/kernel/.config"
+        _USE_KERNEL_CONFIG="${PATCH_DIR}/kernel/.config"
     fi
 else
     echo "Using user specified kernel config: ${_USE_KERNEL_CONFIG}"

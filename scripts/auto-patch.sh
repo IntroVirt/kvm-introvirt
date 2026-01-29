@@ -28,7 +28,7 @@ fi
 echo "Creating new patch directory ${NEW_PATCH_DIR} from ${STARTING_PATCH_DIR}..."
 mkdir -p "${NEW_PATCH_DIR}"
 cp -r "${STARTING_PATCH_DIR}/patches" "${NEW_PATCH_DIR}/"
-sed -i "s/${ORIG_KERNEL_VERSION_FULL}/${NEW_KERNEL_VERSION_FULL}/g" "${NEW_PATCH_DIR}/patches/"*
+sed -i "s/${ORIG_KERNEL_VERSION_FULL}/${NEW_KERNEL_VERSION_FULL}/g" "${NEW_PATCH_DIR}/patches/kvm-introvirt-hwe-${ORIG_KERNEL_VERSION_FULL}"
 
 echo "Configuring for new kernel version ${NEW_KERNEL_VERSION_FULL}..."
 KERNEL_VERSION_FULL=${NEW_KERNEL_VERSION_FULL} \
