@@ -28,12 +28,12 @@ if [[ ! -d "./kernel" ]]; then
     fi
 
     if ! apt-get source linux="${FULL_VER}"; then
-        echo "Could not download kernel source for linux-image-unsigned-${_KERNEL_VERSION_FULL} using apt."
+        echo "Could not download kernel source for linux-image-unsigned-${KERNEL_VERSION} using apt."
         echo "Possible this version isn't available in apt anymore."
         echo "Available versions listed are:"
         apt-cache showsrc linux | grep '^Version:'
 
-        REPO_URL="git://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/${_LSB_CODENAME}"
+        REPO_URL="git://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/${CODENAME}"
 
         # Gotta find it somewhere
         FALLBACK_TAG=$(git ls-remote --tags git://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/noble | grep "${FULL_VER%~*}" | cut -d/ -f3- | head -n1)
@@ -44,8 +44,8 @@ if [[ ! -d "./kernel" ]]; then
             "Ubuntu-hwe-${FULL_VER%~*}"
             "Ubuntu-${FULL_VER}"
             "Ubuntu-${FULL_VER%~*}"
-            "Ubuntu-${_KERNEL_VERSION_FULL}"
-            "Ubuntu-hwe-${_KERNEL_VERSION_FULL}"
+            "Ubuntu-${KERNEL_VERSION}"
+            "Ubuntu-hwe-${KERNEL_VERSION}"
             "${FALLBACK_TAG}"
         )
         echo "Falling back to Git clone: ${REPO_URL}"
