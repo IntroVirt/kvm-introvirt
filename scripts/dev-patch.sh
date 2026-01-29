@@ -10,6 +10,7 @@ if [[ $# -ne 1 ]]; then
 fi
 
 KERNEL_VERSION="$(basename "$1")"
+CODENAME="$(echo "$1" | awk -F'/' '{print $2;}')"
 PATCH_DIR="$1"
 
 pushd "${PATCH_DIR}" > /dev/null || exit 1
@@ -26,15 +27,26 @@ if [[ ! -d "./kernel" ]]; then
     fi
 
     if ! apt-get source linux="${FULL_VER}"; then
-        echo "Could not download kernel source for linux-image-unsigned-${KERNEL_VERSION}"
-        echo "Possible this version isn't available anymore."
-        echo "Available versions:"
+        echo "Could not download kernel source for linux-image-unsigned-${_KERNEL_VERSION_FULL} using apt."
+        echo "Possible this version isn't available in apt anymore."
+        echo "Available versions listed are:"
         apt-cache showsrc linux | grep '^Version:'
-        popd > /dev/null || exit 1
-        exit 1
+
+        REPO_URL="git://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/${CODENAME}"
+        GIT_TAG="Ubuntu-${FULL_VER}"
+
+        echo "Falling back to Git clone: ${REPO_URL} at tag ${GIT_TAG}"
+        if git clone --depth 1 --branch "${GIT_TAG}" "${REPO_URL}" ./kernel; then
+            echo "Successfully cloned kernel from Git at tag ${GIT_TAG}"
+        else
+            echo "Failed to find tag ${GIT_TAG} at ${REPO_URL}"
+            popd > /dev/null || exit 1
+            exit 2
+        fi
+    else
+        mv linux*"$(echo "${KERNEL_VERSION}" | cut -d- -f 1)/" kernel
+        rm -f linux*.dsc linux*.tar.gz linux*.diff.gz
     fi
-    mv linux*"$(echo "${KERNEL_VERSION}" | cut -d- -f 1)/" kernel
-    rm -f linux*.dsc linux*.tar.gz linux*.diff.gz
     chmod +x kernel/scripts/*.sh
 fi
 
