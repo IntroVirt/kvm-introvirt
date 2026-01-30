@@ -139,6 +139,181 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/irq.c
  	if (!lapic_in_kernel(v))
  		return v->arch.interrupt.injected;
  
+Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu.c
+===================================================================
+--- 6.14.0-37-generic.orig/kernel/arch/x86/kvm/mmu/mmu.c
++++ 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu.c
+@@ -4677,6 +4677,37 @@ bool kvm_mmu_may_ignore_guest_pat(void)
+ 
+ int kvm_tdp_page_fault(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault)
+ {
++	/* If IntroVirt is hooking EPT faults, deliver here */
++	if (fault->guest_initiated && kvm_is_mem_event_enabled(vcpu->kvm))
++	{
++		/* Look up the fault */
++		struct kvm *kvm = vcpu->kvm;
++		struct mem_access_entry *entry;
++		const u64 gfn = fault->gfn;
++		bool found_match = false;
++
++		mutex_lock(&kvm->mem_access_table.mutex);
++
++		/* Search for the entry */
++		hash_for_each_possible(kvm->mem_access_table.table, entry, node, gfn)
++		{
++			/* Found a match, check requested permission */
++			if(entry->gfn == gfn) {
++				/* Match! */
++				found_match = true;
++				break;
++			}
++		}
++		mutex_unlock(&kvm->mem_access_table.mutex);
++
++		/* If we found a match, deliver it */
++		if (found_match) {
++			printk(KERN_DEBUG "IV-mmu: Matched EPT fault mem event for gfn 0x%08llx. Code: %llu\n", gfn, fault->error_code);
++			kvm_deliver_mem_event(vcpu, fault->addr, fault->error_code);
++			return RET_PF_RETRY;
++		}
++	}
++
+ #ifdef CONFIG_X86_64
+ 	if (tdp_mmu_enabled)
+ 		return kvm_tdp_mmu_page_fault(vcpu, fault);
+@@ -4764,6 +4795,71 @@ long kvm_arch_vcpu_pre_fault_memory(stru
+ 	return min(range->size, end - range->gpa);
+ }
+ 
++static int kvm_tdp_set_pte_perms(struct kvm_vcpu *vcpu, u64 gfn, uint8_t perms, uint8_t* original_perms)
++{
++	struct kvm_shadow_walk_iterator iterator;
++	int result = -ESRCH;
++	u64 gpa = gfn << PAGE_SHIFT;
++	u64 spte = 0ull;
++
++	// Turn off any extra bits in the perms
++	perms &= (PT_USER_MASK|PT_WRITABLE_MASK|PT_PRESENT_MASK);
++
++	// Validate the HAP permissions are allowed
++	if (unlikely(!kvm_x86_ops.hap_permissions_allowed(perms)))
++		return -EINVAL;
++
++	if (!VALID_PAGE(vcpu->arch.mmu->root.hpa))
++	{
++		result = kvm_mmu_load(vcpu);
++		if (unlikely(result))
++			return result;
++	}
++
++retry:
++	walk_shadow_page_lockless_begin(vcpu);
++
++	/* Find the page in the shadow tables */
++	for_each_shadow_entry_lockless(vcpu, gpa, iterator, spte)
++		if (!is_shadow_present_pte(spte) ||
++			iterator.level < PG_LEVEL_4K)
++				{
++					/* The page is not present, so page it in for the guest process */
++					struct mm_struct* mm;
++					int r;
++
++					walk_shadow_page_lockless_end(vcpu);
++
++					/* Dirty hack */
++					/* hva_to_pfn() is hard-coded to current->mm */
++					mm = current->mm;
++					current->mm = vcpu->kvm->mm;
++					r = __kvm_mmu_do_page_fault(vcpu, gpa, 0, false, NULL, NULL, false);
++					current->mm = mm;
++					if (r)
++						return r;
++					goto retry;
++				}
++
++	// Try a few times to update the pte
++	result = -EBUSY;
++	do {
++		u64 new_spte = (spte & ~(PT_USER_MASK|PT_WRITABLE_MASK|PT_PRESENT_MASK)) | perms;
++
++		if (original_perms != NULL)
++			*original_perms = (spte & (PT_USER_MASK|PT_WRITABLE_MASK|PT_PRESENT_MASK));
++
++		if (cmpxchg64(iterator.sptep, spte, new_spte) == spte)
++		{
++			result = 0;
++			break;
++		}
++	} while(true);
++
++	walk_shadow_page_lockless_end(vcpu);
++	return result;
++}
++
+ static void nonpaging_init_context(struct kvm_mmu *context)
+ {
+ 	context->page_fault = nonpaging_page_fault;
+@@ -5464,6 +5560,7 @@ static void init_kvm_tdp_mmu(struct kvm_
+ 	context->cpu_role.as_u64 = cpu_role.as_u64;
+ 	context->root_role.word = root_role.word;
+ 	context->page_fault = kvm_tdp_page_fault;
++	context->set_pte_perms = kvm_tdp_set_pte_perms;
+ 	context->sync_spte = NULL;
+ 	context->get_guest_pgd = get_guest_cr3;
+ 	context->get_pdptr = kvm_pdptr_read;
+Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu_internal.h
+===================================================================
+--- 6.14.0-37-generic.orig/kernel/arch/x86/kvm/mmu/mmu_internal.h
++++ 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu_internal.h
+@@ -294,6 +294,11 @@ struct kvm_page_fault {
+ 	 * is changing its own translation in the guest page tables.
+ 	 */
+ 	bool write_fault_to_shadow_pgtable;
++
++	/*
++	 * IntroVirt Patch
++	 */
++	bool guest_initiated;
+ };
+ 
+ int kvm_tdp_page_fault(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault);
+@@ -343,9 +348,9 @@ static inline void kvm_mmu_prepare_memor
+ 				      fault->is_private);
+ }
+ 
+-static inline int kvm_mmu_do_page_fault(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
++static inline int __kvm_mmu_do_page_fault(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
+ 					u64 err, bool prefetch,
+-					int *emulation_type, u8 *level)
++					int *emulation_type, u8 *level, bool guest_initiated)
+ {
+ 	struct kvm_page_fault fault = {
+ 		.addr = cr2_or_gpa,
+@@ -366,6 +371,11 @@ static inline int kvm_mmu_do_page_fault(
+ 		.is_private = err & PFERR_PRIVATE_ACCESS,
+ 
+ 		.pfn = KVM_PFN_ERR_FAULT,
++
++		/*
++		 * IntroVirt Patch
++		 */
++		.guest_initiated = guest_initiated,
+ 	};
+ 	int r;
+ 
+@@ -407,6 +417,12 @@ static inline int kvm_mmu_do_page_fault(
+ 	return r;
+ }
+ 
++static inline int kvm_mmu_do_page_fault(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
++					u32 err, bool prefetch, int *emulation_type, u8 *level)
++{
++	return __kvm_mmu_do_page_fault(vcpu, cr2_or_gpa, err, prefetch, emulation_type, level, 1);
++}
++
+ int kvm_mmu_max_mapping_level(struct kvm *kvm,
+ 			      const struct kvm_memory_slot *slot, gfn_t gfn);
+ void kvm_mmu_hugepage_adjust(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault);
 Index: 6.14.0-37-generic/kernel/arch/x86/kvm/vmx/capabilities.h
 ===================================================================
 --- 6.14.0-37-generic.orig/kernel/arch/x86/kvm/vmx/capabilities.h
@@ -163,6 +338,24 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/vmx/capabilities.h
  static inline bool cpu_need_tpr_shadow(struct kvm_vcpu *vcpu)
  {
  	return cpu_has_vmx_tpr_shadow() && lapic_in_kernel(vcpu);
+Index: 6.14.0-37-generic/kernel/arch/x86/kvm/vmx/main.c
+===================================================================
+--- 6.14.0-37-generic.orig/kernel/arch/x86/kvm/vmx/main.c
++++ 6.14.0-37-generic/kernel/arch/x86/kvm/vmx/main.c
+@@ -159,6 +159,13 @@ struct kvm_x86_ops vt_x86_ops __initdata
+ 	.vcpu_deliver_sipi_vector = kvm_vcpu_deliver_sipi_vector,
+ 
+ 	.get_untagged_addr = vmx_get_untagged_addr,
++
++	/* IntroVirt patch */
++	.update_syscall_intercept = vmx_update_exception_bitmap,
++	.set_cr_monitor = vmx_set_cr_monitor,
++	.set_monitor_trap_flag = vmx_set_monitor_trap_flag,
++	.set_invlpg_monitor = vmx_set_invlpg_monitor,
++	.hap_permissions_allowed = vmx_hap_permissions_allowed,
+ };
+ 
+ struct kvm_x86_init_ops vt_init_ops __initdata = {
 Index: 6.14.0-37-generic/kernel/arch/x86/kvm/vmx/vmx.c
 ===================================================================
 --- 6.14.0-37-generic.orig/kernel/arch/x86/kvm/vmx/vmx.c
@@ -413,6 +606,23 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/vmx/vmx.c
  static unsigned int vmx_handle_intel_pt_intr(void)
  {
  	struct kvm_vcpu *vcpu = kvm_get_running_vcpu();
+Index: 6.14.0-37-generic/kernel/arch/x86/kvm/vmx/vmx.h
+===================================================================
+--- 6.14.0-37-generic.orig/kernel/arch/x86/kvm/vmx/vmx.h
++++ 6.14.0-37-generic/kernel/arch/x86/kvm/vmx/vmx.h
+@@ -426,6 +426,12 @@ u64 vmx_get_l2_tsc_multiplier(struct kvm
+ 
+ gva_t vmx_get_untagged_addr(struct kvm_vcpu *vcpu, gva_t gva, unsigned int flags);
+ 
++/* IntroVirt Patch */
++int vmx_set_cr_monitor(struct kvm_vcpu *vcpu, int cr, int mode);
++int vmx_set_monitor_trap_flag(struct kvm_vcpu *vcpu, bool enabled);
++int vmx_set_invlpg_monitor(struct kvm_vcpu *vcpu, bool enabled);
++bool vmx_hap_permissions_allowed(uint16_t perms);
++
+ static inline void vmx_set_intercept_for_msr(struct kvm_vcpu *vcpu, u32 msr,
+ 					     int type, bool value)
+ {
 Index: 6.14.0-37-generic/kernel/arch/x86/kvm/x86.c
 ===================================================================
 --- 6.14.0-37-generic.orig/kernel/arch/x86/kvm/x86.c
@@ -1900,178 +2110,3 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
  	default:
  		return kvm_arch_dev_ioctl(filp, ioctl, arg);
  	}
-Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu.c
-===================================================================
---- 6.14.0-37-generic.orig/kernel/arch/x86/kvm/mmu/mmu.c
-+++ 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu.c
-@@ -4677,6 +4677,37 @@ bool kvm_mmu_may_ignore_guest_pat(void)
- 
- int kvm_tdp_page_fault(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault)
- {
-+	/* If IntroVirt is hooking EPT faults, deliver here */
-+	if (fault->guest_initiated && kvm_is_mem_event_enabled(vcpu->kvm))
-+	{
-+		/* Look up the fault */
-+		struct kvm *kvm = vcpu->kvm;
-+		struct mem_access_entry *entry;
-+		const u64 gfn = fault->gfn;
-+		bool found_match = false;
-+
-+		mutex_lock(&kvm->mem_access_table.mutex);
-+
-+		/* Search for the entry */
-+		hash_for_each_possible(kvm->mem_access_table.table, entry, node, gfn)
-+		{
-+			/* Found a match, check requested permission */
-+			if(entry->gfn == gfn) {
-+				/* Match! */
-+				found_match = true;
-+				break;
-+			}
-+		}
-+		mutex_unlock(&kvm->mem_access_table.mutex);
-+
-+		/* If we found a match, deliver it */
-+		if (found_match) {
-+			printk(KERN_DEBUG "IV-mmu: Matched EPT fault mem event for gfn 0x%08llx. Code: %llu\n", gfn, fault->error_code);
-+			kvm_deliver_mem_event(vcpu, fault->addr, fault->error_code);
-+			return RET_PF_RETRY;
-+		}
-+	}
-+
- #ifdef CONFIG_X86_64
- 	if (tdp_mmu_enabled)
- 		return kvm_tdp_mmu_page_fault(vcpu, fault);
-@@ -4764,6 +4795,71 @@ long kvm_arch_vcpu_pre_fault_memory(stru
- 	return min(range->size, end - range->gpa);
- }
- 
-+static int kvm_tdp_set_pte_perms(struct kvm_vcpu *vcpu, u64 gfn, uint8_t perms, uint8_t* original_perms)
-+{
-+	struct kvm_shadow_walk_iterator iterator;
-+	int result = -ESRCH;
-+	u64 gpa = gfn << PAGE_SHIFT;
-+	u64 spte = 0ull;
-+
-+	// Turn off any extra bits in the perms
-+	perms &= (PT_USER_MASK|PT_WRITABLE_MASK|PT_PRESENT_MASK);
-+
-+	// Validate the HAP permissions are allowed
-+	if (unlikely(!kvm_x86_ops.hap_permissions_allowed(perms)))
-+		return -EINVAL;
-+
-+	if (!VALID_PAGE(vcpu->arch.mmu->root.hpa))
-+	{
-+		result = kvm_mmu_load(vcpu);
-+		if (unlikely(result))
-+			return result;
-+	}
-+
-+retry:
-+	walk_shadow_page_lockless_begin(vcpu);
-+
-+	/* Find the page in the shadow tables */
-+	for_each_shadow_entry_lockless(vcpu, gpa, iterator, spte)
-+		if (!is_shadow_present_pte(spte) ||
-+			iterator.level < PG_LEVEL_4K)
-+				{
-+					/* The page is not present, so page it in for the guest process */
-+					struct mm_struct* mm;
-+					int r;
-+
-+					walk_shadow_page_lockless_end(vcpu);
-+
-+					/* Dirty hack */
-+					/* hva_to_pfn() is hard-coded to current->mm */
-+					mm = current->mm;
-+					current->mm = vcpu->kvm->mm;
-+					r = __kvm_mmu_do_page_fault(vcpu, gpa, 0, false, NULL, NULL, false);
-+					current->mm = mm;
-+					if (r)
-+						return r;
-+					goto retry;
-+				}
-+
-+	// Try a few times to update the pte
-+	result = -EBUSY;
-+	do {
-+		u64 new_spte = (spte & ~(PT_USER_MASK|PT_WRITABLE_MASK|PT_PRESENT_MASK)) | perms;
-+
-+		if (original_perms != NULL)
-+			*original_perms = (spte & (PT_USER_MASK|PT_WRITABLE_MASK|PT_PRESENT_MASK));
-+
-+		if (cmpxchg64(iterator.sptep, spte, new_spte) == spte)
-+		{
-+			result = 0;
-+			break;
-+		}
-+	} while(true);
-+
-+	walk_shadow_page_lockless_end(vcpu);
-+	return result;
-+}
-+
- static void nonpaging_init_context(struct kvm_mmu *context)
- {
- 	context->page_fault = nonpaging_page_fault;
-@@ -5464,6 +5560,7 @@ static void init_kvm_tdp_mmu(struct kvm_
- 	context->cpu_role.as_u64 = cpu_role.as_u64;
- 	context->root_role.word = root_role.word;
- 	context->page_fault = kvm_tdp_page_fault;
-+	context->set_pte_perms = kvm_tdp_set_pte_perms;
- 	context->sync_spte = NULL;
- 	context->get_guest_pgd = get_guest_cr3;
- 	context->get_pdptr = kvm_pdptr_read;
-Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu_internal.h
-===================================================================
---- 6.14.0-37-generic.orig/kernel/arch/x86/kvm/mmu/mmu_internal.h
-+++ 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu_internal.h
-@@ -294,6 +294,11 @@ struct kvm_page_fault {
- 	 * is changing its own translation in the guest page tables.
- 	 */
- 	bool write_fault_to_shadow_pgtable;
-+
-+	/*
-+	 * IntroVirt Patch
-+	 */
-+	bool guest_initiated;
- };
- 
- int kvm_tdp_page_fault(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault);
-@@ -343,9 +348,9 @@ static inline void kvm_mmu_prepare_memor
- 				      fault->is_private);
- }
- 
--static inline int kvm_mmu_do_page_fault(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
-+static inline int __kvm_mmu_do_page_fault(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
- 					u64 err, bool prefetch,
--					int *emulation_type, u8 *level)
-+					int *emulation_type, u8 *level, bool guest_initiated)
- {
- 	struct kvm_page_fault fault = {
- 		.addr = cr2_or_gpa,
-@@ -366,6 +371,11 @@ static inline int kvm_mmu_do_page_fault(
- 		.is_private = err & PFERR_PRIVATE_ACCESS,
- 
- 		.pfn = KVM_PFN_ERR_FAULT,
-+
-+		/*
-+		 * IntroVirt Patch
-+		 */
-+		.guest_initiated = guest_initiated,
- 	};
- 	int r;
- 
-@@ -407,6 +417,12 @@ static inline int kvm_mmu_do_page_fault(
- 	return r;
- }
- 
-+static inline int kvm_mmu_do_page_fault(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
-+					u32 err, bool prefetch, int *emulation_type, u8 *level)
-+{
-+	return __kvm_mmu_do_page_fault(vcpu, cr2_or_gpa, err, prefetch, emulation_type, level, 1);
-+}
-+
- int kvm_mmu_max_mapping_level(struct kvm *kvm,
- 			      const struct kvm_memory_slot *slot, gfn_t gfn);
- void kvm_mmu_hugepage_adjust(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault);
