@@ -19,23 +19,24 @@ fi
 SIGNING_KEY_DIR="$1"
 
 ./configure
-make -j$(nproc)
+make -j"$(nproc)"
 
 echo "Remove BTF section..."
-objcopy --remove-section .BTF ubuntu/$(lsb_release -sc)/hwe/$(uname -r)/kernel/arch/x86/kvm/kvm.ko
-objcopy --remove-section .BTF ubuntu/$(lsb_release -sc)/hwe/$(uname -r)/kernel/arch/x86/kvm/kvm-intel.ko
-objcopy --remove-section .BTF ubuntu/$(lsb_release -sc)/hwe/$(uname -r)/kernel/arch/x86/kvm/kvm-amd.ko
+objcopy --remove-section .BTF "ubuntu/$(lsb_release -sc)/hwe/$(uname -r)/kernel/arch/x86/kvm/kvm.ko"
+objcopy --remove-section .BTF "ubuntu/$(lsb_release -sc)/hwe/$(uname -r)/kernel/arch/x86/kvm/kvm-intel.ko"
+objcopy --remove-section .BTF "ubuntu/$(lsb_release -sc)/hwe/$(uname -r)/kernel/arch/x86/kvm/kvm-amd.ko"
 
 echo "Signing kernel modules..."
-ubuntu/$(lsb_release -sc)/hwe/$(uname -r)/kernel/scripts/sign-file \
+"ubuntu/$(lsb_release -sc)/hwe/$(uname -r)/kernel/scripts/sign-file" \
     sha256 "${SIGNING_KEY_DIR}/MOK.priv" \
-    "${SIGNING_KEY_DIR}/MOK.der" ubuntu/$(lsb_release -sc)/hwe/$(uname -r)/kernel/arch/x86/kvm/kvm-intel.ko
-ubuntu/$(lsb_release -sc)/hwe/$(uname -r)/kernel/scripts/sign-file \
+    "${SIGNING_KEY_DIR}/MOK.der" \
+    "ubuntu/$(lsb_release -sc)/hwe/$(uname -r)/kernel/arch/x86/kvm/kvm-intel.ko"
+"ubuntu/$(lsb_release -sc)/hwe/$(uname -r)/kernel/scripts/sign-file" \
     sha256 "${SIGNING_KEY_DIR}/MOK.priv" "${SIGNING_KEY_DIR}/MOK.der" \
-    ubuntu/$(lsb_release -sc)/hwe/$(uname -r)/kernel/arch/x86/kvm/kvm.ko
-ubuntu/$(lsb_release -sc)/hwe/$(uname -r)/kernel/scripts/sign-file \
+    "ubuntu/$(lsb_release -sc)/hwe/$(uname -r)/kernel/arch/x86/kvm/kvm.ko"
+"ubuntu/$(lsb_release -sc)/hwe/$(uname -r)/kernel/scripts/sign-file" \
     sha256 "${SIGNING_KEY_DIR}/MOK.priv" "${SIGNING_KEY_DIR}/MOK.der" \
-    ubuntu/$(lsb_release -sc)/hwe/$(uname -r)/kernel/arch/x86/kvm/kvm-amd.ko
+    "ubuntu/$(lsb_release -sc)/hwe/$(uname -r)/kernel/arch/x86/kvm/kvm-amd.ko"
 
 make package
 
