@@ -38,7 +38,7 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/emulate.c
 ===================================================================
 --- 6.14.0-37-generic.orig/kernel/arch/x86/kvm/emulate.c
 +++ 6.14.0-37-generic/kernel/arch/x86/kvm/emulate.c
-@@ -2423,6 +2423,69 @@ static int em_syscall(struct x86_emulate
+@@ -2423,6 +2423,77 @@ static int em_syscall(struct x86_emulate
  	return X86EMUL_CONTINUE;
  }
  
@@ -54,7 +54,15 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/emulate.c
 +	if(ctxt->mode == X86EMUL_MODE_REAL || ctxt->mode == X86EMUL_MODE_VM86)
 +		return emulate_ud(ctxt);
 +
-+	if(!(em_syscall_is_enabled(ctxt)))
++	/*
++	 * Intel compatible CPUs only support SYSCALL in 64-bit mode, whereas
++	 * AMD allows SYSCALL in any flavor of protected mode.  Note, it's
++	 * infeasible to emulate Intel behavior when running on AMD hardware,
++	 * as SYSCALL won't fault in the "wrong" mode, i.e. there is no #UD
++	 * for KVM to trap-and-emulate, unlike emulating AMD on Intel.
++	 */
++	if (ctxt->mode != X86EMUL_MODE_PROT64 &&
++	    ctxt->ops->guest_cpuid_is_intel_compatible(ctxt))
 +		return emulate_ud(ctxt);
 +
 +	if(ctxt->ops->cpl(ctxt) != 0) {
@@ -108,7 +116,7 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/emulate.c
  static int em_sysenter(struct x86_emulate_ctxt *ctxt)
  {
  	const struct x86_emulate_ops *ops = ctxt->ops;
-@@ -4369,7 +4432,7 @@ static const struct opcode twobyte_table
+@@ -4369,7 +4440,7 @@ static const struct opcode twobyte_table
  	/* 0x00 - 0x0F */
  	G(0, group6), GD(0, &group7), N, N,
  	N, I(ImplicitOps | EmulateOnUD | IsBranch, em_syscall),
@@ -306,7 +314,7 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/vmx/vmx.c
  	return (sign_extend64(gva, lam_bit) & ~BIT_ULL(63)) | (gva & BIT_ULL(63));
  }
  
-+static int vmx_set_cr_monitor(struct kvm_vcpu *vcpu, int cr, int mode)
++int vmx_set_cr_monitor(struct kvm_vcpu *vcpu, int cr, int mode)
 +{
 +	struct vcpu_vmx *vmx = to_vmx(vcpu);
 +
@@ -358,7 +366,7 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/vmx/vmx.c
 +	return 0;
 +}
 +
-+static int vmx_set_monitor_trap_flag(struct kvm_vcpu *vcpu, bool enabled) {
++int vmx_set_monitor_trap_flag(struct kvm_vcpu *vcpu, bool enabled) {
 +	struct vcpu_vmx *vmx = to_vmx(vcpu);
 +
 +	if (!cpu_has_monitor_trap_flag())
@@ -373,7 +381,7 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/vmx/vmx.c
 +	return 0;
 +}
 +
-+static int vmx_set_invlpg_monitor(struct kvm_vcpu *vcpu, bool enabled) {
++int vmx_set_invlpg_monitor(struct kvm_vcpu *vcpu, bool enabled) {
 +	struct vcpu_vmx *vmx = to_vmx(vcpu);
 +
 +	/* Without ept, we always need it set */
@@ -387,7 +395,7 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/vmx/vmx.c
 +	return 0;
 +}
 +
-+static bool vmx_hap_permissions_allowed(uint16_t perms) {
++bool vmx_hap_permissions_allowed(uint16_t perms) {
 +	if ((perms & PT_PRESENT_MASK) == 0)
 +	{
 +		if ((perms & PT_WRITABLE_MASK))
@@ -1896,10 +1904,10 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu.c
 ===================================================================
 --- 6.14.0-37-generic.orig/kernel/arch/x86/kvm/mmu/mmu.c
 +++ 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu.c
-@@ -4626,6 +4626,37 @@ int kvm_handle_page_fault(struct kvm_vcp
- }
- EXPORT_SYMBOL_GPL(kvm_handle_page_fault);
+@@ -4677,6 +4677,37 @@ bool kvm_mmu_may_ignore_guest_pat(void)
  
+ int kvm_tdp_page_fault(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault)
+ {
 +	/* If IntroVirt is hooking EPT faults, deliver here */
 +	if (fault->guest_initiated && kvm_is_mem_event_enabled(vcpu->kvm))
 +	{
@@ -1925,15 +1933,15 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu.c
 +
 +		/* If we found a match, deliver it */
 +		if (found_match) {
-+			printk(KERN_DEBUG "IV-mmu: Matched EPT fault mem event for gfn 0x%08llx. Code: %d\n", gfn, fault->error_code);
++			printk(KERN_DEBUG "IV-mmu: Matched EPT fault mem event for gfn 0x%08llx. Code: %llu\n", gfn, fault->error_code);
 +			kvm_deliver_mem_event(vcpu, fault->addr, fault->error_code);
 +			return RET_PF_RETRY;
 +		}
 +	}
 +
  #ifdef CONFIG_X86_64
- static int kvm_tdp_mmu_page_fault(struct kvm_vcpu *vcpu,
- 				  struct kvm_page_fault *fault)
+ 	if (tdp_mmu_enabled)
+ 		return kvm_tdp_mmu_page_fault(vcpu, fault);
 @@ -4764,6 +4795,71 @@ long kvm_arch_vcpu_pre_fault_memory(stru
  	return min(range->size, end - range->gpa);
  }
@@ -1977,7 +1985,7 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu.c
 +					/* hva_to_pfn() is hard-coded to current->mm */
 +					mm = current->mm;
 +					current->mm = vcpu->kvm->mm;
-+					r = __kvm_mmu_do_page_fault(vcpu, gpa, 0, false, NULL, false);
++					r = __kvm_mmu_do_page_fault(vcpu, gpa, 0, false, NULL, NULL, false);
 +					current->mm = mm;
 +					if (r)
 +						return r;
