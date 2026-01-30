@@ -60,7 +60,13 @@ fi
 if [ $FAILED -ne 0 ]; then
     echo "FAILED TO RELOAD KVM MODULES!!!"
     echo "Please shutdown your VMs and run 'sudo modprobe -r ${WHICH_MOD} kvm && sudo modprobe ${WHICH_MOD}'"
+    exit 1
 else
     echo "Loading ${WHICH_MOD} module"
-    modprobe ${WHICH_MOD}
+    if ! modprobe ${WHICH_MOD}; then
+        echo "Failed to load ${WHICH_MOD} module!"
+        exit 1
+    fi
 fi
+
+exit 0

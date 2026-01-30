@@ -1,37 +1,12 @@
-name: CI Tests
+name: Create Release
 
 on:
   push:
-    paths-ignore: ['**.md']
-    branches:
-        - main
-  pull_request:
-    paths-ignore: ['**.md']
-    branches:
-      - main
+    tags:
+    - 'v*'
 
 jobs:
-  # Validate code formatting
-  quality:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y shellcheck
-        shell: bash
-      - name: Validate Shell Scripts
-        run: |
-          mapfile -t scripts < <(find . -iname "*.sh" -or -iname "configure")
-          if ! shellcheck "${scripts[@]}"; then
-              echo "You must fix shell script issues before submitting a pull request"
-              echo ""
-              exit 1
-          fi
-          echo "Your shell scripts are looking real good!"
-        shell: bash
-
+  # Build and publish release assets
   build:
     runs-on: ${{ matrix.config.os }}
 
@@ -43,7 +18,6 @@ jobs:
           - { os: ubuntu-22.04, kernel: 6.8.0-40-generic, codename: jammy, release: 22.04 }
           - { os: ubuntu-24.04, kernel: 6.8.0-41-generic, codename: noble, release: 24.04 }
           - { os: ubuntu-24.04, kernel: 6.8.0-90-generic, codename: noble, release: 24.04 }
-          - { os: ubuntu-24.04, kernel: 6.14.0-37-generic, codename: noble, release: 24.04 }
 
     steps:
       - uses: actions/checkout@v4
@@ -85,3 +59,37 @@ jobs:
         with:
           name: kvm-introvirt-${{ matrix.config.kernel }}.${{ matrix.config.release }}
           path: dist/*.deb
+
+  # Create the release
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Download the built debs from the build job
+      - name: Download Release Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-debs
+          pattern: kvm-introvirt-*
+
+      # Create and upload the debs to a new release
+      - name: Upload Release Asset
+        id: upload-release-asset
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ls -lah ./all-debs
+          cd ./all-debs
+          for rel in kvm-introvirt-*; do
+              echo "Zipping ${rel}"
+              zip -r "${rel}.zip" "${rel}"
+          done
+
+          echo "Uploading release assets"
+          gh release create ${{ github.ref_name }} \
+            --title "Release ${{ github.ref_name }}" \
+            --draft \
+            *.zip
+        shell: bash

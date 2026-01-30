@@ -1,5 +1,10 @@
 # kvm-introvirt
 
+[![Discord](https://dcbadge.limes.pink/api/server/https://discord.gg/YSdGvAhSmH?style=flat)](https://discord.gg/YSdGvAhSmH)
+[![GitHub release (latest by date)](https://img.shields.io/github/v/release/IntroVirt/kvm-introvirt?color=brightgreen)](https://github.com/IntroVirt/kvm-introvirt/releases/latest)
+[![CI Tests](https://github.com/IntroVirt/kvm-introvirt/actions/workflows/ci.yml/badge.svg)](https://github.com/IntroVirt/kvm-introvirt/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
 IntroVirt KVM module. Intel CPUs have full support. AMD CPUs are lacking support for breakpoints but syscall tracing should work.
 
 ## Installation Instructions
@@ -25,7 +30,7 @@ If you cannot find a deb package that matches your OS or kernel version, see bel
     sudo apt-get install -y \
         bc devscripts quilt git flex bison libssl-dev libelf-dev debhelper \
         libncurses-dev gawk openssl dkms libudev-dev libpci-dev libiberty-dev \
-        autoconf llvm \
+        libdw-dev dwarves libdwarf-dev autoconf llvm \
         linux-headers-$(uname -r) \
         linux-modules-$(uname -r)
 
@@ -34,6 +39,7 @@ If you cannot find a deb package that matches your OS or kernel version, see bel
     ```
 
 1. Clone and build the module (assuming the folder exists for your kernel)
+    * You can install an older supported kernel through `apt`, and boot into it if needed.
 
     ```shell
     git clone https://github.com/IntroVirt/kvm-introvirt.git
@@ -113,7 +119,7 @@ quilt refresh
 quilt rename kvm-introvirt-hwe-$(uname -r)
 
 # Generate the header text for the quilt patch
-cat << EOF 
+cat << EOF
 Description: KVM IntroVirt patch for Ubuntu HWE kernel $(uname -r)
  The KVM IntroVirt patch adds introspection support to KVM. This allows
  for inspection of virtual machine memory and manipulation of running processes in-guest.

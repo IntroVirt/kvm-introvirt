@@ -1,17 +1,17 @@
-Description: KVM IntroVirt patch for Ubuntu HWE kernel 6.8.0-41-generic
+Description: KVM IntroVirt patch for Ubuntu HWE kernel 6.8.0-90-generic
  The KVM IntroVirt patch adds introspection support to KVM. This allows
  for inspection of virtual machine memory and manipulation of running processes in-guest.
  This patch is required for compatibility with the user-land IntroVirt library.
 Author: AIS Inc., introvirt@ainfosec.com
 Origin: upstream, https://github.com/IntroVirt/kvm-introvirt
 Bug: https://github.com/IntroVirt/kvm-introvirt/issues
-Last-Update: 2024-09-03
+Last-Update: 2026-01-28
 ---
 This patch header follows DEP-3: http://dep.debian.net/deps/dep3/
-Index: 6.8.0-41-generic/kernel/arch/x86/include/asm/kvm_host.h
+Index: 6.8.0-90-generic/kernel/arch/x86/include/asm/kvm_host.h
 ===================================================================
---- 6.8.0-41-generic.orig/kernel/arch/x86/include/asm/kvm_host.h
-+++ 6.8.0-41-generic/kernel/arch/x86/include/asm/kvm_host.h
+--- 6.8.0-90-generic.orig/kernel/arch/x86/include/asm/kvm_host.h
++++ 6.8.0-90-generic/kernel/arch/x86/include/asm/kvm_host.h
 @@ -454,6 +454,7 @@ struct kvm_mmu {
  			    struct x86_exception *exception);
  	int (*sync_spte)(struct kvm_vcpu *vcpu,
@@ -34,10 +34,10 @@ Index: 6.8.0-41-generic/kernel/arch/x86/include/asm/kvm_host.h
  };
  
  struct kvm_x86_nested_ops {
-Index: 6.8.0-41-generic/kernel/arch/x86/kvm/emulate.c
+Index: 6.8.0-90-generic/kernel/arch/x86/kvm/emulate.c
 ===================================================================
---- 6.8.0-41-generic.orig/kernel/arch/x86/kvm/emulate.c
-+++ 6.8.0-41-generic/kernel/arch/x86/kvm/emulate.c
+--- 6.8.0-90-generic.orig/kernel/arch/x86/kvm/emulate.c
++++ 6.8.0-90-generic/kernel/arch/x86/kvm/emulate.c
 @@ -2455,6 +2455,69 @@ static int em_syscall(struct x86_emulate
  	return X86EMUL_CONTINUE;
  }
@@ -117,10 +117,10 @@ Index: 6.8.0-41-generic/kernel/arch/x86/kvm/emulate.c
  	DI(ImplicitOps | Priv, invd), DI(ImplicitOps | Priv, wbinvd), N, N,
  	N, D(ImplicitOps | ModRM | SrcMem | NoAccess), N, N,
  	/* 0x10 - 0x1F */
-Index: 6.8.0-41-generic/kernel/arch/x86/kvm/irq.c
+Index: 6.8.0-90-generic/kernel/arch/x86/kvm/irq.c
 ===================================================================
---- 6.8.0-41-generic.orig/kernel/arch/x86/kvm/irq.c
-+++ 6.8.0-41-generic/kernel/arch/x86/kvm/irq.c
+--- 6.8.0-90-generic.orig/kernel/arch/x86/kvm/irq.c
++++ 6.8.0-90-generic/kernel/arch/x86/kvm/irq.c
 @@ -58,6 +58,9 @@ int kvm_cpu_has_extint(struct kvm_vcpu *
  	 * pending interrupt or should re-inject an injected
  	 * interrupt.
@@ -131,10 +131,10 @@ Index: 6.8.0-41-generic/kernel/arch/x86/kvm/irq.c
  	if (!lapic_in_kernel(v))
  		return v->arch.interrupt.injected;
  
-Index: 6.8.0-41-generic/kernel/arch/x86/kvm/vmx/capabilities.h
+Index: 6.8.0-90-generic/kernel/arch/x86/kvm/vmx/capabilities.h
 ===================================================================
---- 6.8.0-41-generic.orig/kernel/arch/x86/kvm/vmx/capabilities.h
-+++ 6.8.0-41-generic/kernel/arch/x86/kvm/vmx/capabilities.h
+--- 6.8.0-90-generic.orig/kernel/arch/x86/kvm/vmx/capabilities.h
++++ 6.8.0-90-generic/kernel/arch/x86/kvm/vmx/capabilities.h
 @@ -71,6 +71,7 @@ extern struct vmcs_config vmcs_config __
  struct vmx_capability {
  	u32 ept;
@@ -155,10 +155,10 @@ Index: 6.8.0-41-generic/kernel/arch/x86/kvm/vmx/capabilities.h
  static inline bool cpu_need_tpr_shadow(struct kvm_vcpu *vcpu)
  {
  	return cpu_has_vmx_tpr_shadow() && lapic_in_kernel(vcpu);
-Index: 6.8.0-41-generic/kernel/arch/x86/kvm/vmx/vmx.c
+Index: 6.8.0-90-generic/kernel/arch/x86/kvm/vmx/vmx.c
 ===================================================================
---- 6.8.0-41-generic.orig/kernel/arch/x86/kvm/vmx/vmx.c
-+++ 6.8.0-41-generic/kernel/arch/x86/kvm/vmx/vmx.c
+--- 6.8.0-90-generic.orig/kernel/arch/x86/kvm/vmx/vmx.c
++++ 6.8.0-90-generic/kernel/arch/x86/kvm/vmx/vmx.c
 @@ -874,7 +874,7 @@ void vmx_update_exception_bitmap(struct
  	 * We intercept those #GP and allow access to them anyway
  	 * as VMware does.
@@ -419,10 +419,10 @@ Index: 6.8.0-41-generic/kernel/arch/x86/kvm/vmx/vmx.c
  };
  
  static unsigned int vmx_handle_intel_pt_intr(void)
-Index: 6.8.0-41-generic/kernel/arch/x86/kvm/x86.c
+Index: 6.8.0-90-generic/kernel/arch/x86/kvm/x86.c
 ===================================================================
---- 6.8.0-41-generic.orig/kernel/arch/x86/kvm/x86.c
-+++ 6.8.0-41-generic/kernel/arch/x86/kvm/x86.c
+--- 6.8.0-90-generic.orig/kernel/arch/x86/kvm/x86.c
++++ 6.8.0-90-generic/kernel/arch/x86/kvm/x86.c
 @@ -129,6 +129,11 @@ static void store_regs(struct kvm_vcpu *
  static int sync_regs(struct kvm_vcpu *vcpu);
  static int kvm_vcpu_do_singlestep(struct kvm_vcpu *vcpu);
@@ -1119,10 +1119,10 @@ Index: 6.8.0-41-generic/kernel/arch/x86/kvm/x86.c
  void kvm_fixup_and_inject_pf_error(struct kvm_vcpu *vcpu, gva_t gva, u16 error_code)
  {
  	struct kvm_mmu *mmu = vcpu->arch.walk_mmu;
-Index: 6.8.0-41-generic/kernel/arch/x86/kvm/x86.h
+Index: 6.8.0-90-generic/kernel/arch/x86/kvm/x86.h
 ===================================================================
---- 6.8.0-41-generic.orig/kernel/arch/x86/kvm/x86.h
-+++ 6.8.0-41-generic/kernel/arch/x86/kvm/x86.h
+--- 6.8.0-90-generic.orig/kernel/arch/x86/kvm/x86.h
++++ 6.8.0-90-generic/kernel/arch/x86/kvm/x86.h
 @@ -322,6 +322,29 @@ int x86_emulate_instruction(struct kvm_v
  			    int emulation_type, void *insn, int insn_len);
  fastpath_t handle_fastpath_set_msr_irqoff(struct kvm_vcpu *vcpu);
@@ -1153,10 +1153,10 @@ Index: 6.8.0-41-generic/kernel/arch/x86/kvm/x86.h
  extern u64 host_xcr0;
  extern u64 host_xss;
  extern u64 host_arch_capabilities;
-Index: 6.8.0-41-generic/kernel/include/linux/kvm_host.h
+Index: 6.8.0-90-generic/kernel/include/linux/kvm_host.h
 ===================================================================
---- 6.8.0-41-generic.orig/kernel/include/linux/kvm_host.h
-+++ 6.8.0-41-generic/kernel/include/linux/kvm_host.h
+--- 6.8.0-90-generic.orig/kernel/include/linux/kvm_host.h
++++ 6.8.0-90-generic/kernel/include/linux/kvm_host.h
 @@ -28,6 +28,7 @@
  #include <linux/rcuwait.h>
  #include <linux/refcount.h>
@@ -1245,10 +1245,10 @@ Index: 6.8.0-41-generic/kernel/include/linux/kvm_host.h
  
  void kvm_flush_remote_tlbs(struct kvm *kvm);
  void kvm_flush_remote_tlbs_range(struct kvm *kvm, gfn_t gfn, u64 nr_pages);
-Index: 6.8.0-41-generic/kernel/include/uapi/linux/kvm.h
+Index: 6.8.0-90-generic/kernel/include/uapi/linux/kvm.h
 ===================================================================
---- 6.8.0-41-generic.orig/kernel/include/uapi/linux/kvm.h
-+++ 6.8.0-41-generic/kernel/include/uapi/linux/kvm.h
+--- 6.8.0-90-generic.orig/kernel/include/uapi/linux/kvm.h
++++ 6.8.0-90-generic/kernel/include/uapi/linux/kvm.h
 @@ -536,6 +536,20 @@ struct kvm_translation {
  	__u8  pad[5];
  };
@@ -1404,10 +1404,10 @@ Index: 6.8.0-41-generic/kernel/include/uapi/linux/kvm.h
   * Extension capability list.
   */
  #define KVM_CAP_IRQCHIP	  0
-Index: 6.8.0-41-generic/kernel/virt/kvm/kvm_main.c
+Index: 6.8.0-90-generic/kernel/virt/kvm/kvm_main.c
 ===================================================================
---- 6.8.0-41-generic.orig/kernel/virt/kvm/kvm_main.c
-+++ 6.8.0-41-generic/kernel/virt/kvm/kvm_main.c
+--- 6.8.0-90-generic.orig/kernel/virt/kvm/kvm_main.c
++++ 6.8.0-90-generic/kernel/virt/kvm/kvm_main.c
 @@ -501,6 +501,14 @@ static void kvm_vcpu_init(struct kvm_vcp
  	/* Fill the stats id string for the vcpu */
  	snprintf(vcpu->stats_id, sizeof(vcpu->stats_id), "kvm-%d/vcpu-%d",
@@ -1915,10 +1915,10 @@ Index: 6.8.0-41-generic/kernel/virt/kvm/kvm_main.c
  	default:
  		return kvm_arch_dev_ioctl(filp, ioctl, arg);
  	}
-Index: 6.8.0-41-generic/kernel/arch/x86/kvm/mmu/mmu.c
+Index: 6.8.0-90-generic/kernel/arch/x86/kvm/mmu/mmu.c
 ===================================================================
---- 6.8.0-41-generic.orig/kernel/arch/x86/kvm/mmu/mmu.c
-+++ 6.8.0-41-generic/kernel/arch/x86/kvm/mmu/mmu.c
+--- 6.8.0-90-generic.orig/kernel/arch/x86/kvm/mmu/mmu.c
++++ 6.8.0-90-generic/kernel/arch/x86/kvm/mmu/mmu.c
 @@ -4596,6 +4596,37 @@ int kvm_tdp_page_fault(struct kvm_vcpu *
  		}
  	}
@@ -2037,10 +2037,10 @@ Index: 6.8.0-41-generic/kernel/arch/x86/kvm/mmu/mmu.c
  	context->sync_spte = NULL;
  	context->get_guest_pgd = get_guest_cr3;
  	context->get_pdptr = kvm_pdptr_read;
-Index: 6.8.0-41-generic/kernel/arch/x86/kvm/mmu/mmu_internal.h
+Index: 6.8.0-90-generic/kernel/arch/x86/kvm/mmu/mmu_internal.h
 ===================================================================
---- 6.8.0-41-generic.orig/kernel/arch/x86/kvm/mmu/mmu_internal.h
-+++ 6.8.0-41-generic/kernel/arch/x86/kvm/mmu/mmu_internal.h
+--- 6.8.0-90-generic.orig/kernel/arch/x86/kvm/mmu/mmu_internal.h
++++ 6.8.0-90-generic/kernel/arch/x86/kvm/mmu/mmu_internal.h
 @@ -247,6 +247,11 @@ struct kvm_page_fault {
  	 * is changing its own translation in the guest page tables.
  	 */
