@@ -2,6 +2,7 @@
 config.mk
 .build_vars
 kernel/
+pve-kernel/
 *.dsc
 *.gz
 *.patch~

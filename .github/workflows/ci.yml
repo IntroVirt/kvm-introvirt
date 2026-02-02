@@ -44,6 +44,7 @@ jobs:
           - { os: ubuntu-24.04, kernel: 6.8.0-41-generic, codename: noble, release: 24.04 }
           - { os: ubuntu-24.04, kernel: 6.8.0-90-generic, codename: noble, release: 24.04 }
           - { os: ubuntu-24.04, kernel: 6.14.0-37-generic, codename: noble, release: 24.04 }
+          - { os: ubuntu-24.04, kernel: 6.8.4-2-pve, codename: pve, release: pve-8.4}
 
     steps:
       - uses: actions/checkout@v4
@@ -53,11 +54,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bc devscripts quilt git flex bison \
-            libssl-dev libelf-dev debhelper libncurses-dev gawk openssl \
-            dkms libudev-dev libpci-dev libiberty-dev autoconf llvm \
-            libdw-dev dwarves libdwarf-dev \
-            linux-headers-${{ matrix.config.kernel }} \
-            linux-modules-${{ matrix.config.kernel }}
+              libssl-dev libelf-dev debhelper libncurses-dev gawk openssl \
+              dkms libudev-dev libpci-dev libiberty-dev autoconf llvm \
+              libdw-dev dwarves libdwarf-dev
+
+          if [[ "${{ matrix.config.codename }}" != "pve" ]]; then
+              sudo apt-get install -y \
+              linux-headers-${{ matrix.config.kernel }} \
+              linux-modules-${{ matrix.config.kernel }}
+          fi
 
           # Enable source repos to get kernel source
           sudo sed -i '/^#\s*deb-src /s/^# *//' /etc/apt/sources.list

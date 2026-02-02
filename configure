@@ -6,32 +6,40 @@
 _KERNEL_VERSION_FULL=${KERNEL_VERSION_FULL:="$(uname -r)"}
 _LSB_RELEASE=${LSB_RELEASE:="$(lsb_release -sr)"}
 _LSB_CODENAME=${LSB_CODENAME:="$(lsb_release -sc)"}
-PATCH_DIR="ubuntu/${_LSB_CODENAME}/hwe/${_KERNEL_VERSION_FULL}"
+_PATCH_DIR=${PATCH_DIR:="ubuntu/${_LSB_CODENAME}/hwe/${_KERNEL_VERSION_FULL}"}
+_KERNEL_TAG=${KERNEL_TAG:=""}
 PATCH_VERSION="1.0.0"
 EMAIL="${DEBEMAIL:=laplantes@ainfosec.com}"
 FULLNAME="${DEBFULLNAME:=Sean LaPlante}"
 _USE_KERNEL_CONFIG=${USE_KERNEL_CONFIG:=""}
+_KERNEL_SYMVERS_FILE=${KERNEL_SYMVERS_FILE:="/usr/src/linux-headers-${_KERNEL_VERSION_FULL}/Module.symvers"}
 
-if [[ ! -d "${PATCH_DIR}" ]]; then
+if [[ ${_LSB_CODENAME} == "pve" ]]; then
+    echo "Using PVE patch directory structure."
+    _PATCH_DIR="pve/${_KERNEL_VERSION_FULL}"
+    _USE_KERNEL_CONFIG=$(realpath "${_PATCH_DIR}/config-${_KERNEL_VERSION_FULL}")
+    _KERNEL_SYMVERS_FILE=$(realpath "${_PATCH_DIR}/Module.symvers")
+fi
+
+if [[ ! -d "${_PATCH_DIR}" ]]; then
     echo "No patch for ${_KERNEL_VERSION_FULL} in ${_LSB_CODENAME} HWE."
-    echo "Make the ${PATCH_DIR} directory and copy most recent patch files over to start working on the patch."
+    echo "Make the ${_PATCH_DIR} directory and copy most recent patch files over to start working on the patch."
     exit 1
 fi
 
-pushd "${PATCH_DIR}" > /dev/null || exit 1
+get_ubuntu_kernel_source() {
+    local full_ver=""
 
-if [[ ! -d "./kernel" ]]; then
-    echo "Getting kernel source. This could take a bit..."
+    echo "Getting Ubuntu kernel source. This could take a bit..."
 
     # Figure out the name of the package
-    FULL_VER=$(apt-cache policy linux-image-unsigned-"${_KERNEL_VERSION_FULL}" | grep "Candidate:" | awk '{print $2}')
-    if [[ -z "${FULL_VER}" || $? -ne 0 ]]; then
+    full_ver=$(apt-cache policy linux-image-unsigned-"${_KERNEL_VERSION_FULL}" | grep "Candidate:" | awk '{print $2}')
+    if [[ -z "${full_ver}" || $? -ne 0 ]]; then
         echo "Could not find kernel package linux-image-unsigned-${_KERNEL_VERSION_FULL}"
-        popd > /dev/null || exit 1
-        exit 1
+        return 1
     fi
 
-    if ! apt-get source linux="${FULL_VER}"; then
+    if ! apt-get source linux="${full_ver}"; then
         echo "Could not download kernel source for linux-image-unsigned-${_KERNEL_VERSION_FULL} using apt."
         echo "Possible this version isn't available in apt anymore."
         echo "Available versions listed are:"
@@ -40,14 +48,14 @@ if [[ ! -d "./kernel" ]]; then
         REPO_URL="git://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/${_LSB_CODENAME}"
 
         # Gotta find it somewhere
-        FALLBACK_TAG=$(git ls-remote --tags git://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/noble | grep "${FULL_VER%~*}" | cut -d/ -f3- | head -n1)
+        FALLBACK_TAG=$(git ls-remote --tags git://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/noble | grep "${full_ver%~*}" | cut -d/ -f3- | head -n1)
 
         # Create a few tags to try
         GIT_TAGS=(
-            "Ubuntu-hwe-${FULL_VER}"
-            "Ubuntu-hwe-${FULL_VER%~*}"
-            "Ubuntu-${FULL_VER}"
-            "Ubuntu-${FULL_VER%~*}"
+            "Ubuntu-hwe-${full_ver}"
+            "Ubuntu-hwe-${full_ver%~*}"
+            "Ubuntu-${full_ver}"
+            "Ubuntu-${full_ver%~*}"
             "Ubuntu-${_KERNEL_VERSION_FULL}"
             "Ubuntu-hwe-${_KERNEL_VERSION_FULL}"
             "${FALLBACK_TAG}"
@@ -64,12 +72,88 @@ if [[ ! -d "./kernel" ]]; then
         done
         if [[ ! -d "./kernel" ]]; then
             echo "Failed to download kernel source from Git as well. Cannot continue."
-            popd > /dev/null || exit 1
-            exit 2
+            return 2
         fi
     else
         mv linux*"$(echo "${_KERNEL_VERSION_FULL}" | cut -d- -f 1)/" kernel
         rm -f linux*.dsc linux*.tar.gz linux*.diff.gz
+    fi
+
+    return 0
+}
+
+get_pve_kernel_source() {
+    echo "Getting PVE kernel source. This could take a bit..."
+    local pve_commit=""
+    local kernel_tag=""
+
+    if [[ ! -f "pve-kernel-commit" ]]; then
+        echo "No pve-kernel-commit file found in patch directory ${_PATCH_DIR}"
+        return 1
+    fi
+    if [[ ! -f "ubuntu-kernel-tag" ]]; then
+        echo "No ubuntu-kernel-tag file found in patch directory ${_PATCH_DIR}"
+        return 1
+    fi
+    if [[ ! -f config-*-pve ]]; then
+        echo "No config file found for PVE kernel in patch directory ${_PATCH_DIR}"
+        return 1
+    fi
+
+    pve_commit="$(cat pve-kernel-commit)"
+    kernel_tag="$(cat ubuntu-kernel-tag)"
+
+    # Clone the pve-kernel repo
+    if ! git clone https://github.com/proxmox/pve-kernel.git ./pve-kernel; then
+        echo "Could not clone PVE kernel source from https://github.com/proxmox/pve-kernel.git"
+        return 1
+    fi
+
+    # And checkout the right commit
+    pushd ./pve-kernel > /dev/null || return 1
+    if ! git checkout "${pve_commit}"; then
+        echo "Could not checkout PVE kernel commit ${pve_commit}"
+        popd > /dev/null || return 1
+        return 1
+    fi
+    popd > /dev/null || return 1
+
+    # Now get the Ubuntu kernel source
+    if ! git clone --depth 1 --branch "${kernel_tag}" git://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/noble ./kernel; then
+        echo "Could not clone Ubuntu kernel source with tag ${kernel_tag}"
+        return 1
+    fi
+
+    # Apply the PVE patches
+    pushd ./kernel > /dev/null || return 1
+    for patch in ../pve-kernel/patches/kernel/*.patch; do
+        echo "applying PVE patch ${patch}"
+        if ! patch --batch -p1 < "${patch}"; then
+            echo "Failed to apply PVE patch ${patch}"
+            popd > /dev/null || return 1
+            return 1
+        fi
+    done
+    popd > /dev/null || return 1
+
+    return 0
+}
+
+pushd "${_PATCH_DIR}" > /dev/null || exit 1
+
+if [[ ! -d "./kernel" ]]; then
+    if [[ "${_PATCH_DIR%%/*}" == "pve" ]]; then
+        if ! get_pve_kernel_source; then
+            ret=$?
+            popd > /dev/null || exit 1
+            exit $ret
+        fi
+    else
+        if ! get_ubuntu_kernel_source; then
+            ret=$?
+            popd > /dev/null || exit 1
+            exit $ret
+        fi
     fi
     chmod +x kernel/scripts/*.sh
 fi
@@ -85,6 +169,7 @@ if quilt unapplied; then
         exit 1
     fi
 fi
+
 popd > /dev/null || exit 1
 
 # Determine the kernel config we should use
@@ -97,7 +182,7 @@ if [[ -z "${_USE_KERNEL_CONFIG}" || ! -f "${_USE_KERNEL_CONFIG}" ]]; then
         _USE_KERNEL_CONFIG="/usr/src/linux-headers-${_KERNEL_VERSION_FULL}/.config"
     else
         echo "Using kernel config from patch directory"
-        _USE_KERNEL_CONFIG="${PATCH_DIR}/kernel/.config"
+        _USE_KERNEL_CONFIG="${_PATCH_DIR}/kernel/.config"
     fi
 else
     echo "Using user specified kernel config: ${_USE_KERNEL_CONFIG}"
@@ -106,13 +191,13 @@ fi
 # Create the config.mk file
 truncate -s0 config.mk
 {
-    echo "WORKING_DIR=${PATCH_DIR}"
+    echo "WORKING_DIR=${_PATCH_DIR}"
     echo "KERNEL_CONFIG_FILE=${_USE_KERNEL_CONFIG}"
-    echo "KERNEL_SYMVERS_FILE=/usr/src/linux-headers-${_KERNEL_VERSION_FULL}/Module.symvers"
+    echo "KERNEL_SYMVERS_FILE=${_KERNEL_SYMVERS_FILE}"
     echo "PATCH_VERSION=${PATCH_VERSION}"
     echo "INSTALL_DIR=/lib/modules/${_KERNEL_VERSION_FULL}/updates/introvirt/"
-    echo "DEB_NAME=kvm-introvirt-${KERNEL_VERSION_FULL}.${_LSB_RELEASE}-${PATCH_VERSION}.deb"
-    echo "KERNEL_VERSION_FULL=${KERNEL_VERSION_FULL}"
+    echo "DEB_NAME=kvm-introvirt-${_KERNEL_VERSION_FULL}.${_LSB_RELEASE}-${PATCH_VERSION}.deb"
+    echo "KERNEL_VERSION_FULL=${_KERNEL_VERSION_FULL}"
 } >> config.mk
 
 rm -f debpkg/DEBIAN/postinst debpkg/DEBIAN/postrm debpkg/DEBIAN/preinst
@@ -121,16 +206,16 @@ cp -f debpkg/DEBIAN/preinst.tpl debpkg/DEBIAN/preinst
 cp -f debpkg/DEBIAN/postrm.tpl debpkg/DEBIAN/postrm
 
 # Update the debian template install files
-sed -i "s/KERNEL_VERSION_FULL=\"<<<REPLACED_BY_CONFIGURE>>>\"/KERNEL_VERSION_FULL=\"${KERNEL_VERSION_FULL}\"/g" debpkg/DEBIAN/postinst
-sed -i "s/KERNEL_VERSION_FULL=\"<<<REPLACED_BY_CONFIGURE>>>\"/KERNEL_VERSION_FULL=\"${KERNEL_VERSION_FULL}\"/g" debpkg/DEBIAN/preinst
-sed -i "s/KERNEL_VERSION_FULL=\"<<<REPLACED_BY_CONFIGURE>>>\"/KERNEL_VERSION_FULL=\"${KERNEL_VERSION_FULL}\"/g" debpkg/DEBIAN/postrm
+sed -i "s/KERNEL_VERSION_FULL=\"<<<REPLACED_BY_CONFIGURE>>>\"/KERNEL_VERSION_FULL=\"${_KERNEL_VERSION_FULL}\"/g" debpkg/DEBIAN/postinst
+sed -i "s/KERNEL_VERSION_FULL=\"<<<REPLACED_BY_CONFIGURE>>>\"/KERNEL_VERSION_FULL=\"${_KERNEL_VERSION_FULL}\"/g" debpkg/DEBIAN/preinst
+sed -i "s/KERNEL_VERSION_FULL=\"<<<REPLACED_BY_CONFIGURE>>>\"/KERNEL_VERSION_FULL=\"${_KERNEL_VERSION_FULL}\"/g" debpkg/DEBIAN/postrm
 
 # Build the changelog
 truncate -s0 debpkg/DEBIAN/changelog
 cat << EOF > debpkg/DEBIAN/changelog
-kvm-introvirt (${KERNEL_VERSION_FULL}.${_LSB_RELEASE}-${PATCH_VERSION}~${_LSB_CODENAME}1) ${_LSB_CODENAME}; urgency=medium
+kvm-introvirt (${_KERNEL_VERSION_FULL}.${_LSB_RELEASE}-${PATCH_VERSION}~${_LSB_CODENAME}1) ${_LSB_CODENAME}; urgency=medium
 
-  * kvm-introvirt patch ${PATCH_VERSION} for ${KERNEL_VERSION_FULL}
+  * kvm-introvirt patch ${PATCH_VERSION} for ${_KERNEL_VERSION_FULL}
 
  -- ${FULLNAME} <${EMAIL}>  $(date -u)
 EOF
@@ -138,12 +223,12 @@ EOF
 # Build the control
 truncate -s0 debpkg/DEBIAN/control
 cat << EOF > debpkg/DEBIAN/control
-Package: kvm-introvirt-${KERNEL_VERSION_FULL}
+Package: kvm-introvirt-${_KERNEL_VERSION_FULL}
 Version: 1.0.0
 Section: libs
 Maintainer: Sean LaPlante <laplantes@ainfosec.com>
 Architecture: all
-Depends: linux-image-${KERNEL_VERSION_FULL}
+Depends: linux-image-${_KERNEL_VERSION_FULL}
 Description: Virtual machine introspection KVM driver
 Homepage: https://github.com/IntroVirt/kvm-introvirt/
 Vcs-Browser: https://github.com/IntroVirt/kvm-introvirt/
