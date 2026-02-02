@@ -114,10 +114,12 @@ get_pve_kernel_source() {
     pve_commit="$(cat pve-kernel-commit)"
     kernel_tag="$(cat ubuntu-kernel-tag)"
 
-    # Clone the pve-kernel repo
-    if ! git clone https://github.com/proxmox/pve-kernel.git ./pve-kernel; then
-        echo "Could not clone PVE kernel source from https://github.com/proxmox/pve-kernel.git"
-        return 1
+    if [[ ! -d "./pve-kernel" ]]; then
+        # Clone the pve-kernel repo
+        if ! git clone https://github.com/proxmox/pve-kernel.git ./pve-kernel; then
+            echo "Could not clone PVE kernel source from https://github.com/proxmox/pve-kernel.git"
+            return 1
+        fi
     fi
 
     # And checkout the right commit
