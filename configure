@@ -191,9 +191,14 @@ if [[ -z "${_USE_KERNEL_CONFIG}" || ! -f "${_USE_KERNEL_CONFIG}" ]]; then
     elif [[ -f "/usr/src/linux-headers-${_KERNEL_VERSION_FULL}/.config" ]]; then
         echo "Using kernel config from linux-headers"
         _USE_KERNEL_CONFIG="/usr/src/linux-headers-${_KERNEL_VERSION_FULL}/.config"
-    else
+    elif [[ -f "${_PATCH_DIR}/kernel/.config" ]]; then
         echo "Using kernel config from patch directory"
         _USE_KERNEL_CONFIG="${_PATCH_DIR}/kernel/.config"
+    else
+        echo "No kernel config found for kernel version ${_KERNEL_VERSION_FULL}."
+        echo "Set the USE_KERNEL_CONFIG environment variable to point to a valid kernel config file."
+        echo "Or make sure the linux-headers-${_KERNEL_VERSION_FULL} and linux-modules-${_KERNEL_VERSION_FULL} packages are installed."
+        return 1
     fi
 else
     echo "Using user specified kernel config: ${_USE_KERNEL_CONFIG}"
