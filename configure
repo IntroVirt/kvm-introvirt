@@ -38,12 +38,16 @@ _PATCH_VERSION=${PATCH_VERSION:="1.0.0"}
 _EMAIL="${DEBEMAIL:=laplantes@ainfosec.com}"
 _FULLNAME="${DEBFULLNAME:=Sean LaPlante}"
 
+# The package we depend on
+_DEB_DEPENDS="linux-image-${_KERNEL_VERSION_FULL}"
+
 # If this is a PVE kernel, override the patch directory, kernel config, and symvers file.
 if [[ ${_LSB_CODENAME} == "pve" ]]; then
     echo "Using PVE patch directory structure."
     _PATCH_DIR="pve/${_KERNEL_VERSION_FULL}"
     _USE_KERNEL_CONFIG=$(realpath "${_PATCH_DIR}/config-${_KERNEL_VERSION_FULL}")
     _KERNEL_SYMVERS_FILE=$(realpath "${_PATCH_DIR}/Module.symvers")
+    _DEB_DEPENDS="proxmox-kernel-${_KERNEL_VERSION_FULL}-signed"
 fi
 
 # Make sure we actually have a patch directory to work with
@@ -132,6 +136,7 @@ get_pve_kernel_source() {
     popd > /dev/null || return 1
 
     # Now get the Ubuntu kernel source
+    # TODO: PVE is targetting noble right now. But this may need to be updated in the future.
     if ! git clone --depth 1 --branch "${kernel_tag}" git://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/noble ./kernel; then
         echo "Could not clone Ubuntu kernel source with tag ${kernel_tag}"
         return 1
@@ -238,6 +243,8 @@ kvm-introvirt (${_KERNEL_VERSION_FULL}.${_LSB_RELEASE}-${_PATCH_VERSION}~${_LSB_
  -- ${_FULLNAME} <${_EMAIL}>  $(date -u)
 EOF
 
+
+
 # Build the control
 truncate -s0 debpkg/DEBIAN/control
 cat << EOF > debpkg/DEBIAN/control
@@ -246,7 +253,7 @@ Version: 1.0.0
 Section: libs
 Maintainer: Sean LaPlante <laplantes@ainfosec.com>
 Architecture: all
-Depends: linux-image-${_KERNEL_VERSION_FULL}
+Depends: ${_DEB_DEPENDS}
 Description: Virtual machine introspection KVM driver
 Homepage: https://github.com/IntroVirt/kvm-introvirt/
 Vcs-Browser: https://github.com/IntroVirt/kvm-introvirt/

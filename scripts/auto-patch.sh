@@ -2,16 +2,18 @@
 
 # Helper script to auto-patch the kernel from a given starting patch and new kernel version
 # Run from the root of the repo
+#
+# Doesn't work for PVE kernels.
 
-if [[ $# -ne 2 ]]; then
-    echo "Usage: $0 <path-to-starting-patch> <new-kernel-version-path>"
-    echo "    Example: $0 ubuntu/noble/hwe/6.8.0-90-generic ubuntu/noble/hwe/6.14.0-37-generic"
+if [[ $# -ne 3 ]]; then
+    echo "Usage: $0 <path-to-starting-patch> <new-kernel-version-path> <new-codename>"
+    echo "    Example: $0 ubuntu/noble/hwe/6.8.0-90-generic ubuntu/noble/hwe/6.14.0-37-generic noble"
     exit 1
 fi
 
 ORIG_KERNEL_VERSION_FULL=$(basename "$1")
 NEW_KERNEL_VERSION_FULL=$(basename "$2")
-NEW_CODENAME="$(echo "$2" | awk -F'/' '{print $2;}')"
+NEW_CODENAME="$3"
 STARTING_PATCH_DIR="$1"
 NEW_PATCH_DIR="$2"
 
@@ -34,7 +36,6 @@ echo "Configuring for new kernel version ${NEW_KERNEL_VERSION_FULL}..."
 KERNEL_VERSION_FULL=${NEW_KERNEL_VERSION_FULL} \
 LSB_CODENAME=${NEW_CODENAME} \
 ./configure
-
 ret=$?
 if [[ $ret -ne 0 ]]; then
     echo "Configuration failed! See output above. Manual patching may be required."
