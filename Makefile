@@ -4,7 +4,7 @@ WORKING_DIR ?= "."
 
 module:
 	cp $(KERNEL_CONFIG_FILE) $(WORKING_DIR)/kernel/.config
-	$(MAKE) -C $(WORKING_DIR)/kernel/ oldconfig scripts prepare modules_prepare
+	$(MAKE) -C $(WORKING_DIR)/kernel/ olddefconfig scripts prepare modules_prepare
 	cp $(KERNEL_SYMVERS_FILE) $(WORKING_DIR)/kernel/
 	KCPPFLAGS="-DKVM_INTROSPECTION_PATCH_VERSION=\\\"$(PATCH_VERSION)\\\"" $(MAKE) -C $(WORKING_DIR)/kernel/ M=arch/x86/kvm/
 
