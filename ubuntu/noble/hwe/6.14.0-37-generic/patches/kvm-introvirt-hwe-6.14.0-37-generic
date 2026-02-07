@@ -143,14 +143,12 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu.c
 ===================================================================
 --- 6.14.0-37-generic.orig/kernel/arch/x86/kvm/mmu/mmu.c
 +++ 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu.c
-@@ -4677,6 +4677,40 @@ bool kvm_mmu_may_ignore_guest_pat(void)
+@@ -4677,6 +4677,39 @@ bool kvm_mmu_may_ignore_guest_pat(void)
  
  int kvm_tdp_page_fault(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault)
  {
-+	/* If IntroVirt is hooking EPT faults, deliver here */
++	/* If IntroVirt is hooking EPT faults, deliver here (only for real guest #PF) */
 +	if (fault->guest_initiated && kvm_is_mem_event_enabled(vcpu->kvm)) {
-+		printk(KERN_DEBUG "IV-mmu: Received guest initiated tdp page fault on gfn 0x%llx while memory events were enabled\n", fault->gfn);
-+
 +		/* Look up the fault */
 +		struct kvm *kvm = vcpu->kvm;
 +		struct mem_access_entry *entry;
@@ -164,7 +162,7 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu.c
 +			/* Found a match, check requested permission */
 +			if(entry->gfn == gfn) {
 +				/* Match! */
-+				printk(KERN_DEBUG "IV-mmu: Found a match for gfn 0x%llx\n", gfn);
++				printk(KERN_DEBUG "IV-mmu: Found a match for memory watchpoint gfn 0x%llx during page fault on vCPU %d\n", gfn, vcpu->vcpu_id);
 +				found_match = true;
 +				break;
 +			}
@@ -178,13 +176,14 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu.c
 +			return RET_PF_RETRY;
 +		}
 +	} else if (unlikely(!fault->guest_initiated && kvm_is_mem_event_enabled(vcpu->kvm))) {
-+		printk(KERN_DEBUG "IV-mmu: non-guest-initiated page fault\n");
++		printk(KERN_DEBUG "IV-mmu: non-guest-initiated page fault. Must be paging in from watchpoint handling.\n");
++		/* Just continue with the normal page fault handling */
 +	}
 +
  #ifdef CONFIG_X86_64
  	if (tdp_mmu_enabled)
  		return kvm_tdp_mmu_page_fault(vcpu, fault);
-@@ -5464,6 +5498,7 @@ static void init_kvm_tdp_mmu(struct kvm_
+@@ -5464,6 +5497,7 @@ static void init_kvm_tdp_mmu(struct kvm_
  	context->cpu_role.as_u64 = cpu_role.as_u64;
  	context->root_role.word = root_role.word;
  	context->page_fault = kvm_tdp_page_fault;
@@ -196,19 +195,17 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu_internal.h
 ===================================================================
 --- 6.14.0-37-generic.orig/kernel/arch/x86/kvm/mmu/mmu_internal.h
 +++ 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu_internal.h
-@@ -294,6 +294,11 @@ struct kvm_page_fault {
+@@ -294,6 +294,9 @@ struct kvm_page_fault {
  	 * is changing its own translation in the guest page tables.
  	 */
  	bool write_fault_to_shadow_pgtable;
 +
-+	/*
-+	 * IntroVirt Patch
-+	 */
++	/* IntroVirt: true if fault from guest #PF; false if synthetic (e.g. set_pte_perms paging in) */
 +	bool guest_initiated;
  };
  
  int kvm_tdp_page_fault(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault);
-@@ -343,9 +348,9 @@ static inline void kvm_mmu_prepare_memor
+@@ -343,9 +346,9 @@ static inline void kvm_mmu_prepare_memor
  				      fault->is_private);
  }
  
@@ -220,26 +217,22 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu_internal.h
  {
  	struct kvm_page_fault fault = {
  		.addr = cr2_or_gpa,
-@@ -366,6 +371,11 @@ static inline int kvm_mmu_do_page_fault(
+@@ -366,6 +369,7 @@ static inline int kvm_mmu_do_page_fault(
  		.is_private = err & PFERR_PRIVATE_ACCESS,
  
  		.pfn = KVM_PFN_ERR_FAULT,
-+
-+		/*
-+		 * IntroVirt Patch
-+		 */
 +		.guest_initiated = guest_initiated,
  	};
  	int r;
  
-@@ -407,6 +417,12 @@ static inline int kvm_mmu_do_page_fault(
+@@ -407,6 +411,12 @@ static inline int kvm_mmu_do_page_fault(
  	return r;
  }
  
 +static inline int kvm_mmu_do_page_fault(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
 +					u32 err, bool prefetch, int *emulation_type, u8 *level)
 +{
-+	return __kvm_mmu_do_page_fault(vcpu, cr2_or_gpa, err, prefetch, emulation_type, level, 1);
++	return __kvm_mmu_do_page_fault(vcpu, cr2_or_gpa, err, prefetch, emulation_type, level, true);
 +}
 +
  int kvm_mmu_max_mapping_level(struct kvm *kvm,
@@ -769,7 +762,7 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/x86.c
 +			goto out;
 +		}
 +
-+		printk(KERN_DEBUG "IV-x86: Set memory access for gfn 0x%08llx to 0x%x\n", perms.gfn, perms.perms);
++		printk(KERN_DEBUG "IV-x86: KVM_SET_MEM_ACCESS gfn 0x%08llx to 0x%x\n", perms.gfn, perms.perms);
 +		mutex_lock(&kvm->mem_access_table.mutex);
 +
 +		kvm_for_each_vcpu(i, vcpu, kvm) {
@@ -922,7 +915,7 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/x86.c
 +	if(nr == 0xFACE && vcpu->introspection_mm)
 +	{
 +		const uint64_t original_rip = kvm_rip_read(vcpu);
-+		printk(KERN_DEBUG "IV-x86: Received introspection hypercall from guest VCPU %d, original RIP: 0x%08llx\n", vcpu->vcpu_id, original_rip);
++		printk(KERN_DEBUG "IV-x86: Received introspection hypercall from guest vCPU %d, original RIP: 0x%08llx\n", vcpu->vcpu_id, original_rip);
 +
 +		if (vcpu->vmcall_hook_enabled) {
 +			printk(KERN_DEBUG "IV-x86: Delivering introspection hypercall event to host for guest VCPU %d\n", vcpu->vcpu_id);
@@ -937,7 +930,7 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/x86.c
 +		printk(KERN_DEBUG "IV-x86: Hypercall handler changed RIP to 0x%08lx for guest VCPU %d\n", kvm_rip_read(vcpu), vcpu->vcpu_id);
 +		return 0;
 +	} else if (nr == 0xFACE && !vcpu->introspection_mm) {
-+		printk(KERN_DEBUG "IV-x86: Received IntroVirt enabled hypercall while no introspection tool was attached. Fallback to KVM handling.\n");
++		printk(KERN_DEBUG "IV-x86: Received IntroVirt enabled hypercall from guest vCPU %d while no introspection tool was attached. Fallback to KVM handling.\n", vcpu->vcpu_id);
 +	}
 +
  	if (kvm_xen_hypercall_enabled(vcpu->kvm))
@@ -2109,7 +2102,7 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/tdp_mmu.c
 ===================================================================
 --- 6.14.0-37-generic.orig/kernel/arch/x86/kvm/mmu/tdp_mmu.c
 +++ 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/tdp_mmu.c
-@@ -1948,3 +1948,123 @@ u64 *kvm_tdp_mmu_fast_pf_get_last_sptep(
+@@ -1948,3 +1948,140 @@ u64 *kvm_tdp_mmu_fast_pf_get_last_sptep(
  	 */
  	return rcu_dereference(sptep);
  }
@@ -2164,7 +2157,7 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/tdp_mmu.c
 +		/* Check if we found the target 4K page */
 +		if (iter.gfn == gfn && iter.level == PG_LEVEL_4K && is_last_spte(iter.old_spte, iter.level)) {
 +			/* Found the target SPTE, modify it */
-+			printk(KERN_DEBUG "IV-tdp_mmu: Found target spte, updating to new permissionsn\n");
++			printk(KERN_DEBUG "IV-tdp_mmu: Found target spte, updating to new permissions\n");
 +			new_spte = (iter.old_spte &  ~(PT_USER_MASK | PT_WRITABLE_MASK | PT_PRESENT_MASK)) | perms;
 +
 +			if (original_perms != NULL) {
@@ -2193,30 +2186,47 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/tdp_mmu.c
 +			printk(KERN_DEBUG "IV-tdp_mmu: page not present or not at 4k level\n");
 +			rcu_read_unlock();
 +
-+			/* Page in the missing page */
++			/*
++			 * Use the same path as a guest #PF so the fault is fully
++			 * built (gfn, slot) and kvm_mmu_faultin_pfn runs before
++			 * kvm_tdp_mmu_map. error_code 0 = not present, no write/fetch.
++			 */
 +			{
-+				printk(KERN_DEBUG "IV-tdp_mmu: injecting page fault to load memory\n");
-+				struct mm_struct *mm;
-+				struct kvm_page_fault fault = {
-+					.addr = gfn << PAGE_SHIFT,
-+					.error_code = 0,
-+					.prefetch = false,
-+					.guest_initiated = false,
-+				};
 +				int r;
++				struct mm_struct *mm;
 +
-+				/* Dirty hack: hva_to_pfn() is hard-coded to current->mm */
++				printk(KERN_DEBUG "IV-tdp_mmu: injecting page fault to load memory\n");
 +				mm = current->mm;
 +				current->mm = vcpu->kvm->mm;
-+				r = kvm_tdp_mmu_map(vcpu, &fault);  // TODO: Need to call something else or move our other patch here!!!
++				r = __kvm_mmu_do_page_fault(vcpu, gfn << PAGE_SHIFT, 0, false, NULL, NULL, false);
 +				current->mm = mm;
-+				if (r) {
++				if (r != 0 && r != RET_PF_FIXED && r != RET_PF_SPURIOUS) {
 +					printk(KERN_ERR "IV-mmu: Failed to page in GFN 0x%08llx: %d\n", gfn, r);
 +					return r;
 +				}
 +			}
++			rcu_read_lock();
++			goto retry;
++		}
 +
-+			/* Retry with RCU lock */
++		/*
++		 * Present leaf at huge page level (2M or 1G): target gfn is inside
++		 * this range but we need a 4K SPTE. Split the huge page so the
++		 * next walk finds a 4K leaf.
++		 */
++		if (iter.level > PG_LEVEL_4K && is_last_spte(iter.old_spte, iter.level) && gfn >= iter.gfn && gfn < iter.gfn + KVM_PAGES_PER_HPAGE(iter.level)) {
++			printk(KERN_DEBUG "IV-mmu: Present leaf at huge page. Splitting and retrying\n");
++			struct kvm_memory_slot *slot;
++
++			rcu_read_unlock();
++			slot = kvm_vcpu_gfn_to_memslot(vcpu, gfn);
++			if (slot) {
++				write_lock(&vcpu->kvm->mmu_lock);
++				kvm_tdp_mmu_try_split_huge_pages(vcpu->kvm, slot,
++					iter.gfn, iter.gfn + KVM_PAGES_PER_HPAGE(iter.level),
++					PG_LEVEL_4K, false);
++				write_unlock(&vcpu->kvm->mmu_lock);
++			}
 +			rcu_read_lock();
 +			goto retry;
 +		}
