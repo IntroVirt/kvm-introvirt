@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Helper to build an insert modified KVM kernel module for debugging
+# Helper to build and insert modified KVM kernel module for debugging
 # Run from the root of the repo
 
 if [[ $# -ne 2 ]]; then

@@ -143,13 +143,14 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu.c
 ===================================================================
 --- 6.14.0-37-generic.orig/kernel/arch/x86/kvm/mmu/mmu.c
 +++ 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu.c
-@@ -4677,6 +4677,37 @@ bool kvm_mmu_may_ignore_guest_pat(void)
+@@ -4677,6 +4677,40 @@ bool kvm_mmu_may_ignore_guest_pat(void)
  
  int kvm_tdp_page_fault(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault)
  {
 +	/* If IntroVirt is hooking EPT faults, deliver here */
-+	if (fault->guest_initiated && kvm_is_mem_event_enabled(vcpu->kvm))
-+	{
++	if (fault->guest_initiated && kvm_is_mem_event_enabled(vcpu->kvm)) {
++		printk(KERN_DEBUG "IV-mmu: Received guest initiated tdp page fault on gfn 0x%llx while memory events were enabled\n", fault->gfn);
++
 +		/* Look up the fault */
 +		struct kvm *kvm = vcpu->kvm;
 +		struct mem_access_entry *entry;
@@ -159,11 +160,11 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu.c
 +		mutex_lock(&kvm->mem_access_table.mutex);
 +
 +		/* Search for the entry */
-+		hash_for_each_possible(kvm->mem_access_table.table, entry, node, gfn)
-+		{
++		hash_for_each_possible(kvm->mem_access_table.table, entry, node, gfn) {
 +			/* Found a match, check requested permission */
 +			if(entry->gfn == gfn) {
 +				/* Match! */
++				printk(KERN_DEBUG "IV-mmu: Found a match for gfn 0x%llx\n", gfn);
 +				found_match = true;
 +				break;
 +			}
@@ -172,88 +173,18 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu.c
 +
 +		/* If we found a match, deliver it */
 +		if (found_match) {
-+			printk(KERN_DEBUG "IV-mmu: Matched EPT fault mem event for gfn 0x%08llx. Code: %llu\n", gfn, fault->error_code);
++			printk(KERN_DEBUG "IV-mmu: Matched EPT fault mem event for gfn 0x%08llx. Fault code: %llu\n", gfn, fault->error_code);
 +			kvm_deliver_mem_event(vcpu, fault->addr, fault->error_code);
 +			return RET_PF_RETRY;
 +		}
++	} else if (unlikely(!fault->guest_initiated && kvm_is_mem_event_enabled(vcpu->kvm))) {
++		printk(KERN_DEBUG "IV-mmu: non-guest-initiated page fault\n");
 +	}
 +
  #ifdef CONFIG_X86_64
  	if (tdp_mmu_enabled)
  		return kvm_tdp_mmu_page_fault(vcpu, fault);
-@@ -4764,6 +4795,71 @@ long kvm_arch_vcpu_pre_fault_memory(stru
- 	return min(range->size, end - range->gpa);
- }
- 
-+static int kvm_tdp_set_pte_perms(struct kvm_vcpu *vcpu, u64 gfn, uint8_t perms, uint8_t* original_perms)
-+{
-+	struct kvm_shadow_walk_iterator iterator;
-+	int result = -ESRCH;
-+	u64 gpa = gfn << PAGE_SHIFT;
-+	u64 spte = 0ull;
-+
-+	// Turn off any extra bits in the perms
-+	perms &= (PT_USER_MASK|PT_WRITABLE_MASK|PT_PRESENT_MASK);
-+
-+	// Validate the HAP permissions are allowed
-+	if (unlikely(!kvm_x86_ops.hap_permissions_allowed(perms)))
-+		return -EINVAL;
-+
-+	if (!VALID_PAGE(vcpu->arch.mmu->root.hpa))
-+	{
-+		result = kvm_mmu_load(vcpu);
-+		if (unlikely(result))
-+			return result;
-+	}
-+
-+retry:
-+	walk_shadow_page_lockless_begin(vcpu);
-+
-+	/* Find the page in the shadow tables */
-+	for_each_shadow_entry_lockless(vcpu, gpa, iterator, spte)
-+		if (!is_shadow_present_pte(spte) ||
-+			iterator.level < PG_LEVEL_4K)
-+				{
-+					/* The page is not present, so page it in for the guest process */
-+					struct mm_struct* mm;
-+					int r;
-+
-+					walk_shadow_page_lockless_end(vcpu);
-+
-+					/* Dirty hack */
-+					/* hva_to_pfn() is hard-coded to current->mm */
-+					mm = current->mm;
-+					current->mm = vcpu->kvm->mm;
-+					r = __kvm_mmu_do_page_fault(vcpu, gpa, 0, false, NULL, NULL, false);
-+					current->mm = mm;
-+					if (r)
-+						return r;
-+					goto retry;
-+				}
-+
-+	// Try a few times to update the pte
-+	result = -EBUSY;
-+	do {
-+		u64 new_spte = (spte & ~(PT_USER_MASK|PT_WRITABLE_MASK|PT_PRESENT_MASK)) | perms;
-+
-+		if (original_perms != NULL)
-+			*original_perms = (spte & (PT_USER_MASK|PT_WRITABLE_MASK|PT_PRESENT_MASK));
-+
-+		if (cmpxchg64(iterator.sptep, spte, new_spte) == spte)
-+		{
-+			result = 0;
-+			break;
-+		}
-+	} while(true);
-+
-+	walk_shadow_page_lockless_end(vcpu);
-+	return result;
-+}
-+
- static void nonpaging_init_context(struct kvm_mmu *context)
- {
- 	context->page_fault = nonpaging_page_fault;
-@@ -5464,6 +5560,7 @@ static void init_kvm_tdp_mmu(struct kvm_
+@@ -5464,6 +5498,7 @@ static void init_kvm_tdp_mmu(struct kvm_
  	context->cpu_role.as_u64 = cpu_role.as_u64;
  	context->root_role.word = root_role.word;
  	context->page_fault = kvm_tdp_page_fault;
@@ -414,7 +345,7 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/vmx/vmx.c
  
  		/*
  		 * VMware backdoor emulation on #GP interception only handles
-@@ -5368,6 +5381,24 @@ static int handle_exception_nmi(struct k
+@@ -5368,6 +5381,20 @@ static int handle_exception_nmi(struct k
  		kvm_run->exit_reason = KVM_EXIT_DEBUG;
  		kvm_run->debug.arch.pc = kvm_get_linear_rip(vcpu);
  		kvm_run->debug.arch.exception = ex_no;
@@ -422,24 +353,20 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/vmx/vmx.c
 +		/*
 +		 * Check if we have an introspection client attached
 +		 */
-+		if(vcpu->introspection_mm)
-+		{
-+			if(ex_no == BP_VECTOR)
-+			{
++		if(vcpu->introspection_mm) {
++			if(ex_no == BP_VECTOR) {
 +				/*
 +				 *  Deliver the event to the introspection handler,
 +				 *  instead of exiting to QEMU.
 +				 */
 +				kvm_deliver_trap_event(vcpu, ex_no);
-+
 +				return 1;
 +			}
 +		}
-+
  		break;
  	case AC_VECTOR:
  		if (vmx_guest_inject_ac(vcpu)) {
-@@ -5509,19 +5540,25 @@ static int handle_cr(struct kvm_vcpu *vc
+@@ -5509,19 +5536,25 @@ static int handle_cr(struct kvm_vcpu *vc
  		trace_kvm_cr_write(cr, val);
  		switch (cr) {
  		case 0:
@@ -467,7 +394,7 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/vmx/vmx.c
  				err = kvm_set_cr8(vcpu, cr8);
  				ret = kvm_complete_insn_gp(vcpu, err);
  				if (lapic_in_kernel(vcpu))
-@@ -5549,11 +5586,13 @@ static int handle_cr(struct kvm_vcpu *vc
+@@ -5549,11 +5582,13 @@ static int handle_cr(struct kvm_vcpu *vc
  			val = kvm_read_cr3(vcpu);
  			kvm_register_write(vcpu, reg, val);
  			trace_kvm_cr_read(cr, val);
@@ -481,19 +408,20 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/vmx/vmx.c
  			return kvm_skip_emulated_instruction(vcpu);
  		}
  		break;
-@@ -5958,6 +5997,11 @@ static int handle_pause(struct kvm_vcpu
+@@ -5958,6 +5993,12 @@ static int handle_pause(struct kvm_vcpu
  
  static int handle_monitor_trap(struct kvm_vcpu *vcpu)
  {
 +	/*
 +	* If introspection is enabled, deliver the event.
 +	*/
-+	if(vcpu->introspection_mm)
++	if(vcpu->introspection_mm) {
 +		kvm_deliver_monitor_trap_flag_event(vcpu);
++	}
  	return 1;
  }
  
-@@ -7591,7 +7635,8 @@ int vmx_vcpu_create(struct kvm_vcpu *vcp
+@@ -7591,7 +7632,8 @@ int vmx_vcpu_create(struct kvm_vcpu *vcp
  	vmx_disable_intercept_for_msr(vcpu, MSR_GS_BASE, MSR_TYPE_RW);
  	vmx_disable_intercept_for_msr(vcpu, MSR_KERNEL_GS_BASE, MSR_TYPE_RW);
  #endif
@@ -503,7 +431,7 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/vmx/vmx.c
  	vmx_disable_intercept_for_msr(vcpu, MSR_IA32_SYSENTER_ESP, MSR_TYPE_RW);
  	vmx_disable_intercept_for_msr(vcpu, MSR_IA32_SYSENTER_EIP, MSR_TYPE_RW);
  	if (kvm_cstate_in_guest(vcpu->kvm)) {
-@@ -8341,6 +8386,102 @@ gva_t vmx_get_untagged_addr(struct kvm_v
+@@ -8341,6 +8383,102 @@ gva_t vmx_get_untagged_addr(struct kvm_v
  	return (sign_extend64(gva, lam_bit) & ~BIT_ULL(63)) | (gva & BIT_ULL(63));
  }
  
@@ -800,14 +728,13 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/x86.c
  	default:
  		r = -EINVAL;
  	}
-@@ -7343,6 +7481,101 @@ set_pit2_out:
+@@ -7343,6 +7481,105 @@ set_pit2_out:
  		r = kvm_vm_ioctl_set_msr_filter(kvm, &filter);
  		break;
  	}
 +	case KVM_SET_MEM_ACCESS_ENABLED: {
 +		kvm->mem_event_enabled = arg;
-+		printk(KERN_DEBUG "IV-x86: Memory access events %s\n",
-+		       kvm->mem_event_enabled ? "enabled" : "disabled");
++		printk(KERN_DEBUG "IV-x86: Memory access events %s\n", kvm->mem_event_enabled ? "enabled" : "disabled");
 +
 +		/* TODO: Check if EPT is enabled; it's the only one we support right now. */
 +
@@ -825,17 +752,24 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/x86.c
 +		struct mem_access_entry * entry;
 +
 +		r = -EINVAL;
-+		if (unlikely(xa_empty(&kvm->vcpu_array)))
++		if (unlikely(xa_empty(&kvm->vcpu_array))) {
++			printk(KERN_ERR "IV-x86: KVM_SET_MEM_ACCESS, VCPU array empty.\n");
 +			goto out;
++		}
 +
 +		r = -EINVAL;
-+		if (unlikely(!kvm->mem_event_enabled))
++		if (unlikely(!kvm->mem_event_enabled)) {
++			printk(KERN_ERR "IV-x86: KVM_SET_MEM_ACCESS ioctl received but memory events are disabled.\n");
 +			goto out;
++		}
 +
 +		r = -EFAULT;
-+		if (copy_from_user(&perms, argp, sizeof(perms)))
++		if (copy_from_user(&perms, argp, sizeof(perms))) {
++			printk(KERN_ERR "IV-x86: KVM_SET_MEM_ACCESS unable to copy permissions struct from user-mode.\n");
 +			goto out;
++		}
 +
++		printk(KERN_DEBUG "IV-x86: Set memory access for gfn 0x%08llx to 0x%x\n", perms.gfn, perms.perms);
 +		mutex_lock(&kvm->mem_access_table.mutex);
 +
 +		kvm_for_each_vcpu(i, vcpu, kvm) {
@@ -843,12 +777,10 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/x86.c
 +		}
 +
 +		// Search for the entry
-+		hash_for_each_possible(kvm->mem_access_table.table, entry, node, perms.gfn)
-+		{
-+			if (entry->gfn == perms.gfn)
-+			{
-+				printk(KERN_DEBUG "IV-x86: Found existing mem access entry for GFN 0x%08llx. Updating perms: 0x%x\n",
-+				       perms.gfn, perms.perms);
++		printk(KERN_DEBUG "IV-x86: Searching for existing memory access entry for gfn 0x%08llx\n", perms.gfn);
++		hash_for_each_possible(kvm->mem_access_table.table, entry, node, perms.gfn) {
++			if (entry->gfn == perms.gfn) {
++				printk(KERN_DEBUG "IV-x86: Found existing mem access entry for gfn 0x%08llx. Updating perms: 0x%x\n", perms.gfn, perms.perms);
 +				/* This entry already exists */
 +				/* Set the requested permissions */
 +				r = vcpu->arch.mmu->set_pte_perms(vcpu, perms.gfn, perms.perms, NULL);
@@ -856,13 +788,10 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/x86.c
 +					printk(KERN_ERR "IV-x86: Failed to set PTE perms for GFN 0x%08llx. %d\n", perms.gfn, r);
 +					goto set_ept_out;
 +				}
-+
-+				if (perms.perms == entry->original_perms)
-+				{
++				if (perms.perms == entry->original_perms) {
 +					/* Setting back to original permissions, just remove the entry */
 +					hash_del(&entry->node);
-+					printk(KERN_DEBUG "IV-x86: Removed mem access entry for GFN 0x%08llx. Restored perms: 0x%x\n",
-+					       perms.gfn, entry->original_perms);
++					printk(KERN_DEBUG "IV-x86: requested memory permissions are the original permissions. Removing mem access entry for GFN 0x%08llx and restoring perms: 0x%x\n", perms.gfn, entry->original_perms);
 +					kfree(entry);
 +					r = 0;
 +				}
@@ -872,19 +801,20 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/x86.c
 +
 +		r = 0;
 +		/* Don't bother adding an entry when setting full permissions */
-+		if (perms.perms != (PT_USER_MASK|PT_WRITABLE_MASK|PT_PRESENT_MASK))
-+		{
++		if (perms.perms != (PT_USER_MASK|PT_WRITABLE_MASK|PT_PRESENT_MASK)) {
 +			/* We didn't find an existing entry, add a new one. */
++			printk(KERN_DEBUG "IV-x86: No existing entry for gfn 0x%08llx. Adding a new one.\n", perms.gfn);
 +			r = -ENOMEM;
 +			entry = kmalloc(sizeof(struct mem_access_entry), GFP_KERNEL);
-+			if(!entry)
++			if(!entry) {
++				printk(KERN_ERR "IV-x86: Out of memory creating mem_access_entry. Cannot continue.\n");
 +				goto set_ept_out;
++			}
 +			entry->gfn = perms.gfn;
 +
 +			/* Update the PTE */
 +			r = vcpu->arch.mmu->set_pte_perms(vcpu, perms.gfn, perms.perms, &entry->original_perms);
-+			if (r)
-+			{
++			if (r) {
 +				// Failed to set PTE permissions, so free the entry
 +				printk(KERN_ERR "IV-x86: Failed to set PTE perms for GFN 0x%08llx. %d\n", perms.gfn, r);
 +				kfree(entry);
@@ -892,17 +822,19 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/x86.c
 +			}
 +			/* Add the entry to the table */
 +			hash_add(kvm->mem_access_table.table, &entry->node, perms.gfn);
-+			printk(KERN_DEBUG "IV-x86: Added mem access entry for GFN 0x%08llx. New perms: 0x%x\n",
-+			       perms.gfn, perms.perms);
++			printk(KERN_DEBUG "IV-x86: Added mem access entry for GFN 0x%08llx. New perms: 0x%x\n", perms.gfn, perms.perms);
++		} else {
++			printk(KERN_DEBUG "IV-x86: No entry needed when setting full permissions.\n");
 +		}
 +set_ept_out:
 +		mutex_unlock(&kvm->mem_access_table.mutex);
++		printk(KERN_DEBUG "IV-x86: KVM_SET_MEM_ACCESS done.\n");
 +		break;
 +	}
  	default:
  		r = -ENOTTY;
  	}
-@@ -9094,6 +9327,8 @@ int x86_emulate_instruction(struct kvm_v
+@@ -9094,6 +9331,8 @@ int x86_emulate_instruction(struct kvm_v
  	int r;
  	struct x86_emulate_ctxt *ctxt = vcpu->arch.emulate_ctxt;
  	bool writeback = true;
@@ -911,7 +843,7 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/x86.c
  
  	if ((emulation_type & EMULTYPE_ALLOW_RETRY_PF) &&
  	    (WARN_ON_ONCE(is_guest_mode(vcpu)) ||
-@@ -9158,10 +9393,54 @@ int x86_emulate_instruction(struct kvm_v
+@@ -9158,10 +9397,54 @@ int x86_emulate_instruction(struct kvm_v
  		}
  	}
  
@@ -970,7 +902,7 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/x86.c
  	}
  
  	/*
-@@ -9296,6 +9575,11 @@ writeback:
+@@ -9296,6 +9579,11 @@ writeback:
  	} else
  		vcpu->arch.emulate_regs_need_sync_to_vcpu = true;
  
@@ -982,12 +914,12 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/x86.c
  	return r;
  }
  
-@@ -10110,6 +10394,26 @@ EXPORT_SYMBOL_GPL(____kvm_emulate_hyperc
+@@ -10110,6 +10398,28 @@ EXPORT_SYMBOL_GPL(____kvm_emulate_hyperc
  
  int kvm_emulate_hypercall(struct kvm_vcpu *vcpu)
  {
 +	unsigned long nr = kvm_rax_read(vcpu);
-+	if(nr == 0xFACE)
++	if(nr == 0xFACE && vcpu->introspection_mm)
 +	{
 +		const uint64_t original_rip = kvm_rip_read(vcpu);
 +		printk(KERN_DEBUG "IV-x86: Received introspection hypercall from guest VCPU %d, original RIP: 0x%08llx\n", vcpu->vcpu_id, original_rip);
@@ -1004,12 +936,14 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/x86.c
 +		}
 +		printk(KERN_DEBUG "IV-x86: Hypercall handler changed RIP to 0x%08lx for guest VCPU %d\n", kvm_rip_read(vcpu), vcpu->vcpu_id);
 +		return 0;
++	} else if (nr == 0xFACE && !vcpu->introspection_mm) {
++		printk(KERN_DEBUG "IV-x86: Received IntroVirt enabled hypercall while no introspection tool was attached. Fallback to KVM handling.\n");
 +	}
 +
  	if (kvm_xen_hypercall_enabled(vcpu->kvm))
  		return kvm_xen_hypercall(vcpu);
  
-@@ -11273,6 +11577,26 @@ static int vcpu_run(struct kvm_vcpu *vcp
+@@ -11273,6 +11583,26 @@ static int vcpu_run(struct kvm_vcpu *vcp
  			r = vcpu_block(vcpu);
  		}
  
@@ -1036,7 +970,7 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/x86.c
  		if (r <= 0)
  			break;
  
-@@ -11303,6 +11627,51 @@ static int vcpu_run(struct kvm_vcpu *vcp
+@@ -11303,6 +11633,47 @@ static int vcpu_run(struct kvm_vcpu *vcp
  	return r;
  }
  
@@ -1052,18 +986,14 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/x86.c
 +	/* Remove all entries */
 +	mutex_lock(&kvm->mem_access_table.mutex);
 +
-+
 +	kvm_for_each_vcpu(i, vcpu, kvm) {
 +		break; // Just need first VCPU
 +	}
 +
-+	hash_for_each_safe(kvm->mem_access_table.table, bkt, tmp, entry, node)
-+	{
++	hash_for_each_safe(kvm->mem_access_table.table, bkt, tmp, entry, node) {
 +		/* Set the mem_access values back to normal */
-+		printk(KERN_DEBUG "IV-x86: \tRestoring GFN 0x%08llx perms to 0x%x\n",
-+		       entry->gfn, entry->original_perms);
++		printk(KERN_DEBUG "IV-x86: \tRestoring GFN 0x%08llx perms to 0x%x\n", entry->gfn, entry->original_perms);
 +		vcpu->arch.mmu->set_pte_perms(vcpu, entry->gfn, entry->original_perms, NULL);
-+
 +		hash_del(&entry->node);
 +		kfree(entry);
 +	}
@@ -1088,7 +1018,7 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/x86.c
  static int __kvm_emulate_halt(struct kvm_vcpu *vcpu, int state, int reason)
  {
  	/*
-@@ -11945,6 +12314,12 @@ static int __set_sregs_common(struct kvm
+@@ -11945,6 +12316,12 @@ static int __set_sregs_common(struct kvm
  	*mmu_reset_needed |= kvm_read_cr0(vcpu) != sregs->cr0;
  	kvm_x86_call(set_cr0)(vcpu, sregs->cr0);
  
@@ -1101,15 +1031,16 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/x86.c
  	*mmu_reset_needed |= kvm_read_cr4(vcpu) != sregs->cr4;
  	kvm_x86_call(set_cr4)(vcpu, sregs->cr4);
  
-@@ -13693,6 +14068,213 @@ int kvm_spec_ctrl_test_value(u64 value)
+@@ -13693,6 +14070,259 @@ int kvm_spec_ctrl_test_value(u64 value)
  }
  EXPORT_SYMBOL_GPL(kvm_spec_ctrl_test_value);
  
-+static void kvm_deliver_introspection_event(struct kvm_vcpu* vcpu,
-+		struct kvm_introspection_event* event)
++static void kvm_deliver_introspection_event(struct kvm_vcpu* vcpu, struct kvm_introspection_event* event)
 +{
-+	if (!vcpu->introspection_mm)
++	if (!vcpu->introspection_mm) {
++		printk(KERN_ERR "IV-x86: VCPU does not have a memory manager set for introspection. Cannot deliver event %d\n", event->event_type);
 +		return;
++	}
 +
 +	/*
 +	 * Fill out the structure with registers and information
@@ -1123,8 +1054,9 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/x86.c
 +    }
 +
 +	mutex_lock(&vcpu->introspection_event_mutex);
-+	if (unlikely(vcpu->introspection_event != NULL))
-+		printk(KERN_ERR "IV-x86: Overwriting existing event %llu", event->event_id);
++	if (unlikely(vcpu->introspection_event != NULL)) {
++		printk(KERN_CRIT "IV-x86: Overwriting existing event %llu\n", event->event_id);
++	}
 +
 +	/*
 +	 * Set the introspection event
@@ -1138,11 +1070,33 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/x86.c
 +	 * If we don't do this, then ioctls will deadlock.
 +	 */
 +	if (likely(event->event_type != KVM_EVENT_SHUTDOWN)) {
-+		if (unlikely(event->event_type == KVM_EVENT_HYPERCALL))
-+			printk(KERN_DEBUG "IV-x86: Pausing vCPU %d for hypercall event %llu\n", vcpu->vcpu_id, event->event_id);
 +		atomic_inc(&vcpu->pause_count);
 +		vcpu_put(vcpu);
 +		mutex_unlock(&vcpu->mutex);
++	}
++
++	switch(event->event_type) {
++	case KVM_EVENT_SHUTDOWN:
++		printk(KERN_DEBUG "IV-x86: KVM_EVENT_SHUTDOWN, vCPU %d, event: %llu\n", vcpu->vcpu_id, event->event_id);
++		break;
++	case KVM_EVENT_REBOOT:
++		printk(KERN_DEBUG "IV-x86: KVM_EVENT_REBOOT, vCPU %d, event: %llu\n", vcpu->vcpu_id, event->event_id);
++		break;
++	case KVM_EVENT_HYPERCALL:
++		printk(KERN_DEBUG "IV-x86: KVM_EVENT_HYPERCALL, vCPU %d, event: %llu\n", vcpu->vcpu_id, event->event_id);
++		break;
++	case KVM_EVENT_EXCEPTION:
++		printk(KERN_DEBUG "IV-x86: KVM_EVENT_EXCEPTION, vCPU %d, event: %llu\n", vcpu->vcpu_id, event->event_id);
++		break;
++	case KVM_EVENT_INVLPG:
++		printk(KERN_DEBUG "IV-x86: KVM_EVENT_INVLPG, vCPU %d, event: %llu\n", vcpu->vcpu_id, event->event_id);
++		break;
++	case KVM_EVENT_SINGLE_STEP:
++		printk(KERN_DEBUG "IV-x86: KVM_EVENT_SINGLE_STEP, vCPU %d, event: %llu\n", vcpu->vcpu_id, event->event_id);
++		break;
++	default:
++		//printk(KERN_DEBUG "IV-x86: event type %d, vCPU %d, event: %llu\n", event->event_type, vcpu->vcpu_id, event->event_id);
++		break;
 +	}
 +
 +	/*
@@ -1153,25 +1107,47 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/x86.c
 +	/*
 +	 * Block until KVM_COMPLETE_INTROSPECTION_EVENT
 +	 */
-+	//printk(KERN_DEBUG "kvm: vCPU %d waiting for event %llu completion\n", vcpu->vcpu_id, event->event_id);
-+	wait_event(vcpu->introspection_event_completed_wait_queue,
-+		vcpu->introspection_event_pending_completion == false);
++	wait_event(vcpu->introspection_event_completed_wait_queue, vcpu->introspection_event_pending_completion == false);
++
++	switch(event->event_type) {
++	case KVM_EVENT_SHUTDOWN:
++		printk(KERN_DEBUG "IV-x86: KVM_EVENT_SHUTDOWN, vCPU %d, event: %llu completed\n", vcpu->vcpu_id, event->event_id);
++		break;
++	case KVM_EVENT_REBOOT:
++		printk(KERN_DEBUG "IV-x86: KVM_EVENT_REBOOT, vCPU %d, event: %llu completed\n", vcpu->vcpu_id, event->event_id);
++		break;
++	case KVM_EVENT_HYPERCALL:
++		printk(KERN_DEBUG "IV-x86: KVM_EVENT_HYPERCALL, vCPU %d, event: %llu completed\n", vcpu->vcpu_id, event->event_id);
++		break;
++	case KVM_EVENT_EXCEPTION:
++		printk(KERN_DEBUG "IV-x86: KVM_EVENT_EXCEPTION, vCPU %d, event: %llu completed\n", vcpu->vcpu_id, event->event_id);
++		break;
++	case KVM_EVENT_INVLPG:
++		printk(KERN_DEBUG "IV-x86: KVM_EVENT_INVLPG, vCPU %d, event: %llu completed\n", vcpu->vcpu_id, event->event_id);
++		break;
++	case KVM_EVENT_SINGLE_STEP:
++		printk(KERN_DEBUG "IV-x86: KVM_EVENT_SINGLE_STEP, vCPU %d, event: %llu completed\n", vcpu->vcpu_id, event->event_id);
++		break;
++	default:
++		//printk(KERN_DEBUG "IV-x86: event type %d, vCPU %d, event: %llu completed\n", event->event_type, vcpu->vcpu_id, event->event_id);
++		break;
++	}
 +
 +	/*
 +	* If we're still being introspected, decrement the pause count.
 +	* Then retake the vcpu and continue on about our business.
 +	*/
 +	if (likely(event->event_type != KVM_EVENT_SHUTDOWN)) {
-+		if (unlikely(event->event_type == KVM_EVENT_HYPERCALL)) {
-+			printk(KERN_DEBUG "IV-x86: vCPU %d hypercall event %llu completed\n", vcpu->vcpu_id, event->event_id);
-+		}
-+
 +		if (vcpu->introspection_mm) {
 +			kvm_vcpu_unpause(vcpu);
++		} else {
++			printk(KERN_CRIT "IV-x86: vcpu %d, introspection disappeared during handling of event %llu. Not unpausing vCPU???\n", vcpu->vcpu_id, event->event_id);
 +		}
 +
-+		if (mutex_lock_killable(&vcpu->mutex))
++		if (mutex_lock_killable(&vcpu->mutex)) {
++			printk(KERN_DEBUG "IV-x86: mutex lock was killable. returning now, not running vcpu_load(vcpu)??? vCPU %d\n", vcpu->vcpu_id);
 +			return;
++		}
 +		vcpu_load(vcpu);
 +	}
 +}
@@ -1628,26 +1604,24 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
  	return kvm;
  
  out_err_no_debugfs:
-@@ -1354,6 +1365,18 @@ static int kvm_vm_release(struct inode *
+@@ -1354,6 +1365,16 @@ static int kvm_vm_release(struct inode *
  	return 0;
  }
  
 +static int kvm_vm_introvirt_release(struct inode *inode, struct file *filp)
 +{
-+    struct kvm *kvm = filp->private_data;
-+
-+    // IntroVirt tool detaching
-+
-+    kvm->introspection_mm = NULL;
-+
-+    kvm_put_kvm(kvm);
-+    return 0;
++	struct kvm *kvm = filp->private_data;
++	printk(KERN_DEBUG "IV-kvm_main: Introvirt tool detaching\n");
++	kvm->introspection_mm = NULL;
++	kvm_put_kvm(kvm);
++	printk(KERN_DEBUG "IV-kvm_main: Introvirt tool detached!\n");
++	return 0;
 +}
 +
  /*
   * Allocation size is twice as large as the actual dirty bitmap size.
   * See kvm_vm_ioctl_get_dirty_log() why this is needed.
-@@ -3579,6 +3602,9 @@ bool kvm_vcpu_block(struct kvm_vcpu *vcp
+@@ -3579,6 +3600,9 @@ bool kvm_vcpu_block(struct kvm_vcpu *vcp
  		if (kvm_vcpu_check_block(vcpu) < 0)
  			break;
  
@@ -1657,21 +1631,22 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
  		waited = true;
  		schedule();
  	}
-@@ -4002,16 +4028,81 @@ static int kvm_vcpu_release(struct inode
+@@ -4002,16 +4026,85 @@ static int kvm_vcpu_release(struct inode
  {
  	struct kvm_vcpu *vcpu = filp->private_data;
  
 +	if (vcpu->vcpu_id == 0)
 +		kvm_deliver_shutdown_event(vcpu);
 +
-+	kvm_put_kvm(vcpu->kvm);
-+	return 0;
-+}
-+
+ 	kvm_put_kvm(vcpu->kvm);
+ 	return 0;
+ }
+ 
 +
 +static int kvm_vcpu_introvirt_release(struct inode *inode, struct file *filp)
 +{
 +	struct kvm_vcpu *vcpu = filp->private_data;
++	printk(KERN_DEBUG "IV-kvm_main: Introvirt releasing vCPU %d\n", vcpu->vcpu_id);
 +
 +	kvm_vcpu_pause(vcpu);
 +
@@ -1696,11 +1671,11 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
 +	// If an introspection event is being delivered, wake that up
 +	wake_up(&vcpu->introspection_event_completed_wait_queue);
 +
- 	kvm_put_kvm(vcpu->kvm);
++	kvm_put_kvm(vcpu->kvm);
++	printk(KERN_DEBUG "IV-kvm_main: Introvirt released vCPU %d COMPLETE\n", vcpu->vcpu_id);
++	return 0;
++}
 +
- 	return 0;
- }
- 
 +// Poll for introspection events
 +static unsigned int kvm_vcpu_poll(struct file *filp, poll_table *wait)
 +{
@@ -1709,11 +1684,14 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
 +
 +	poll_wait(filp, &vcpu->introspection_wait_queue, wait);
 +
-+	if(mutex_lock_interruptible(&vcpu->introspection_event_mutex))
++	if(mutex_lock_interruptible(&vcpu->introspection_event_mutex)) {
++		printk(KERN_ERR "IV-kvm_main: vCPU %d, introspection event mutex lock interruptible. -ERESTARTSYS\n", vcpu->vcpu_id);
 +		return -ERESTARTSYS;
++	}
 +
-+	if(vcpu->introspection_event != NULL)
++	if(vcpu->introspection_event != NULL) {
 +		mask |= POLLIN;
++	}
 +
 +	mutex_unlock(&vcpu->introspection_event_mutex);
 +
@@ -1739,7 +1717,7 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
  };
  
  /*
-@@ -4038,6 +4129,11 @@ static int vcpu_get_pid(void *data, u64
+@@ -4038,6 +4131,11 @@ static int vcpu_get_pid(void *data, u64
  
  DEFINE_SIMPLE_ATTRIBUTE(vcpu_get_pid_fops, vcpu_get_pid, NULL, "%llu\n");
  
@@ -1751,7 +1729,7 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
  static void kvm_create_vcpu_debugfs(struct kvm_vcpu *vcpu)
  {
  	struct dentry *debugfs_dentry;
-@@ -4179,6 +4275,35 @@ vcpu_decrement:
+@@ -4179,6 +4277,43 @@ vcpu_decrement:
  	return r;
  }
  
@@ -1760,22 +1738,30 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
 +	struct kvm_vcpu* vcpu;
 +	int r;
 +
++	printk(KERN_DEBUG "IV-kvm_main: introspection attach to vcpu %d\n", id);
 +	kvm_get_kvm(kvm);
 +
 +	r = -ESRCH;
 +	vcpu = kvm_get_vcpu_by_id(kvm, id);
-+	if(!vcpu)
++	if(!vcpu) {
++		printk(KERN_ERR "IV-kvm_main: no vCPU found with ID %d\n", id);
 +		goto out_err;
++	}
 +
 +	r = -EBUSY;
-+	if (vcpu->introspection_mm)
++	if (vcpu->introspection_mm) {
++		printk(KERN_ERR "IV-kvm_main: vCPU %d already has an attached introspection tool\n", id);
 +		goto out_err;
++	}
 +
 +	r = create_vcpu_introvirt_fd(vcpu);
-+	if(r < 0)
++	if(r < 0) {
++		printk(KERN_ERR "IV-kvm_main: failed to create introvirt fd for vCPU %d. Code: %d\n", id, r);
 +		goto out_err;
++	}
 +
 +	vcpu->introspection_mm = current->mm;
++	printk(KERN_DEBUG "IV-kvm_main: introspection attached to vcpu %d successfully\n", id);
 +	goto out;
 +
 +out_err:
@@ -1787,7 +1773,7 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
  static int kvm_vcpu_ioctl_set_sigmask(struct kvm_vcpu *vcpu, sigset_t *sigset)
  {
  	if (sigset) {
-@@ -4314,6 +4439,31 @@ static int kvm_wait_for_vcpu_online(stru
+@@ -4314,6 +4449,31 @@ static int kvm_wait_for_vcpu_online(stru
  	return 0;
  }
  
@@ -1819,7 +1805,7 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
  static long kvm_vcpu_ioctl(struct file *filp,
  			   unsigned int ioctl, unsigned long arg)
  {
-@@ -4323,8 +4473,8 @@ static long kvm_vcpu_ioctl(struct file *
+@@ -4323,8 +4483,8 @@ static long kvm_vcpu_ioctl(struct file *
  	struct kvm_fpu *fpu = NULL;
  	struct kvm_sregs *kvm_sregs = NULL;
  
@@ -1830,7 +1816,7 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
  
  	if (unlikely(_IOC_TYPE(ioctl) != KVMIO))
  		return -EINVAL;
-@@ -4346,6 +4496,69 @@ static long kvm_vcpu_ioctl(struct file *
+@@ -4346,6 +4506,69 @@ static long kvm_vcpu_ioctl(struct file *
  	if (r != -ENOIOCTLCMD)
  		return r;
  
@@ -1900,7 +1886,7 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
  	if (mutex_lock_killable(&vcpu->mutex))
  		return -EINTR;
  	switch (ioctl) {
-@@ -5053,8 +5266,8 @@ static long kvm_vm_ioctl(struct file *fi
+@@ -5053,8 +5276,8 @@ static long kvm_vm_ioctl(struct file *fi
  	void __user *argp = (void __user *)arg;
  	int r;
  
@@ -1911,7 +1897,7 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
  	switch (ioctl) {
  	case KVM_CREATE_VCPU:
  		r = kvm_vm_ioctl_create_vcpu(kvm, arg);
-@@ -5278,6 +5491,9 @@ static long kvm_vm_ioctl(struct file *fi
+@@ -5278,6 +5501,9 @@ static long kvm_vm_ioctl(struct file *fi
  		break;
  	}
  #endif
@@ -1921,7 +1907,7 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
  	default:
  		r = kvm_arch_vm_ioctl(filp, ioctl, arg);
  	}
-@@ -5365,11 +5581,99 @@ static long kvm_vm_compat_ioctl(struct f
+@@ -5365,11 +5591,99 @@ static long kvm_vm_compat_ioctl(struct f
  }
  #endif
  
@@ -2021,7 +2007,7 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
  };
  
  bool file_is_kvm(struct file *file)
-@@ -5421,10 +5725,39 @@ put_fd:
+@@ -5421,10 +5735,39 @@ put_fd:
  	return r;
  }
  
@@ -2061,34 +2047,39 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
  
  	switch (ioctl) {
  	case KVM_GET_API_VERSION:
-@@ -5449,6 +5782,48 @@ static long kvm_dev_ioctl(struct file *f
+@@ -5449,6 +5792,57 @@ static long kvm_dev_ioctl(struct file *f
  		r += PAGE_SIZE;    /* coalesced mmio ring page */
  #endif
  		break;
 +	case KVM_ATTACH_VM: {
++		printk(KERN_DEBUG "IV-kvm_main: Attach to VM %lu\n", arg);
 +		struct kvm* kvm;
 +
 +		r = -ESRCH;
 +		kvm = get_vm_by_pid(arg);
-+		if(!kvm)
++		if(!kvm) {
++			printk(KERN_ERR "IV-kvm_main: Cannot find VM by ID %lu\n", arg);
 +			goto out;
++		}
 +
 +		r = -EBUSY;
-+		if(kvm->introspection_mm)
++		if(kvm->introspection_mm) {
++			printk(KERN_ERR "IV-kvm_main: IntroVirt already attached to VM %lu\n", arg);
 +		    goto out;
++		}
 +
 +		/* Increment the counter */
 +		kvm_get_kvm(kvm);
 +
 +		/* Get handle to the VM */
-+		r = anon_inode_getfd("kvm-vm", &kvm_vm_introvirt_fops, kvm,
-+				O_RDWR | O_CLOEXEC);
-+
++		r = anon_inode_getfd("kvm-vm", &kvm_vm_introvirt_fops, kvm, O_RDWR | O_CLOEXEC);
 +		kvm->introspection_mm = current->mm;
-+
 +		if(r < 0) {
++			printk(KERN_ERR "IV-kvm_main: IntroVirt failed to attach to VM %lu. Code: %d\n", arg, r);
 +			kvm_put_kvm(kvm);
 +			kvm->introspection_mm = NULL;
++		} else {
++			printk(KERN_DEBUG "IV-kvm_main: Successfully attached to VM %lu\n", arg);
 +		}
 +		break;
 +	}
@@ -2098,15 +2089,160 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
 +
 +		if (len > sizeof(struct kvm_introspection_patch_ver)) {
 +			r = -ETOOSMALL;
++			printk(KERN_ERR "IV-kvm_main: introspection patch version not set correctly. Too small.\n");
 +			goto out;
 +		}
 +
 +		r = -EFAULT;
 +		if(!copy_to_user(argp, str, len)) {
++			printk(KERN_DEBUG "IV-kvm_main: returning introspection patch version %s\n", str);
 +			r = 0;
++		} else {
++			printk(KERN_ERR "IV-kvm_main: failed to copy patch version string to user memory.\n");
 +		}
 +		break;
 +	}
  	default:
  		return kvm_arch_dev_ioctl(filp, ioctl, arg);
  	}
+Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/tdp_mmu.c
+===================================================================
+--- 6.14.0-37-generic.orig/kernel/arch/x86/kvm/mmu/tdp_mmu.c
++++ 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/tdp_mmu.c
+@@ -1948,3 +1948,123 @@ u64 *kvm_tdp_mmu_fast_pf_get_last_sptep(
+ 	 */
+ 	return rcu_dereference(sptep);
+ }
++
++/* IntroVirt Patch */
++int kvm_tdp_set_pte_perms(struct kvm_vcpu *vcpu, u64 gfn, uint8_t perms, uint8_t* original_perms)
++{
++	struct kvm_mmu_page *root;
++	struct tdp_iter iter;
++	gfn_t gfn_bits;
++	u64 new_spte;
++	int result = -ESRCH;
++
++	// Turn off any extra bits in the perms
++	perms &= (PT_USER_MASK | PT_WRITABLE_MASK | PT_PRESENT_MASK);
++
++	// Validate the HAP permissions are allowed
++	if (unlikely(!kvm_x86_ops.hap_permissions_allowed(perms))) {
++		printk(KERN_ERR "IV-tdp_mmu: HAP permissions not allowed\n");
++		return -EINVAL;
++	}
++
++	// Ensure the MMU is loaded
++	if (!VALID_PAGE(vcpu->arch.mmu->root.hpa)) {
++		result = kvm_mmu_load(vcpu);
++		if (unlikely(result)) {
++			printk(KERN_ERR "IV-tdp_mmu: Failed to load MMU root host phys addr 0x%08llx. Code: %d\n", vcpu->arch.mmu->root.hpa, result);
++			return result;
++		}
++	}
++
++	// Get the TDP MMU root page
++	root = root_to_sp(vcpu->arch.mmu->root.hpa);
++	if (!root) {
++		printk(KERN_ERR "IV-tdp_mmu: Failed to get TDP MMU root for vCPU %d\n", vcpu->vcpu_id);
++		return -EINVAL;
++	}
++
++	gfn_bits = kvm_gfn_root_bits(vcpu->kvm, root);
++
++	// Must hold RCU lock for TDP MMU operations
++	rcu_read_lock();
++retry:
++	// Start iterator to walk to target guest frame number
++	tdp_iter_start(&iter, root, PG_LEVEL_4K, gfn, gfn_bits);
++
++	/* Walk to the target SPTE */
++	printk(KERN_DEBUG "IV-tdp_mmu: Walking to target SPTE\n");
++	while (iter.valid && iter.gfn <= gfn) {
++		printk(KERN_DEBUG "IV-tdp_mmu: iter is valid, not at target gfn yet\n");
++
++		/* Check if we found the target 4K page */
++		if (iter.gfn == gfn && iter.level == PG_LEVEL_4K && is_last_spte(iter.old_spte, iter.level)) {
++			/* Found the target SPTE, modify it */
++			printk(KERN_DEBUG "IV-tdp_mmu: Found target spte, updating to new permissionsn\n");
++			new_spte = (iter.old_spte &  ~(PT_USER_MASK | PT_WRITABLE_MASK | PT_PRESENT_MASK)) | perms;
++
++			if (original_perms != NULL) {
++				printk(KERN_DEBUG "IV-tdp_mmu: Setting original permissions in function output variable\n");
++				*original_perms = (iter.old_spte & (PT_USER_MASK | PT_WRITABLE_MASK | PT_PRESENT_MASK));
++			}
++
++			/* Atomically update the SPTE */
++			if (tdp_mmu_set_spte_atomic(vcpu->kvm, &iter, new_spte) != 0) {
++				printk(KERN_ERR "IV-tdp_mmu: could not update spte, try again.\n");
++				continue;
++			}
++
++			/* Invalidate TLB if needed */
++			if (is_shadow_present_pte(iter.old_spte) && leaf_spte_change_needs_tlb_flush(iter.old_spte, new_spte)) {
++				printk(KERN_DEBUG "IV-tdp_mmu: TLB flush needed to update spte\n");
++				kvm_flush_remote_tlbs_gfn(vcpu->kvm, iter.gfn, iter.level);
++			}
++
++			result = 0;
++			break;
++		}
++
++		/* Page not present or not at 4K level - need to page it in */
++		if (!is_shadow_present_pte(iter.old_spte) || iter.level < PG_LEVEL_4K) {
++			printk(KERN_DEBUG "IV-tdp_mmu: page not present or not at 4k level\n");
++			rcu_read_unlock();
++
++			/* Page in the missing page */
++			{
++				printk(KERN_DEBUG "IV-tdp_mmu: injecting page fault to load memory\n");
++				struct mm_struct *mm;
++				struct kvm_page_fault fault = {
++					.addr = gfn << PAGE_SHIFT,
++					.error_code = 0,
++					.prefetch = false,
++					.guest_initiated = false,
++				};
++				int r;
++
++				/* Dirty hack: hva_to_pfn() is hard-coded to current->mm */
++				mm = current->mm;
++				current->mm = vcpu->kvm->mm;
++				r = kvm_tdp_mmu_map(vcpu, &fault);  // TODO: Need to call something else or move our other patch here!!!
++				current->mm = mm;
++				if (r) {
++					printk(KERN_ERR "IV-mmu: Failed to page in GFN 0x%08llx: %d\n", gfn, r);
++					return r;
++				}
++			}
++
++			/* Retry with RCU lock */
++			rcu_read_lock();
++			goto retry;
++		}
++
++		tdp_iter_next(&iter);
++	}
++
++	printk(KERN_DEBUG "IV-mmu: Walk complete\n");
++	rcu_read_unlock();
++
++	if (result != 0 && iter.valid) {
++		printk(KERN_ERR "IV-mmu: Failed to find or modify SPTE for GFN 0x%08llx Code: %d\n", gfn, result);
++	}
++
++	return result;
++}
+\ No newline at end of file
+Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/tdp_mmu.h
+===================================================================
+--- 6.14.0-37-generic.orig/kernel/arch/x86/kvm/mmu/tdp_mmu.h
++++ 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/tdp_mmu.h
+@@ -118,4 +118,7 @@ static inline bool is_tdp_mmu_page(struc
+ static inline bool is_tdp_mmu_page(struct kvm_mmu_page *sp) { return false; }
+ #endif
+ 
++/* IntroVirt Patch */
++int kvm_tdp_set_pte_perms(struct kvm_vcpu *vcpu, u64 gfn, uint8_t perms, uint8_t* original_perms);
++
+ #endif /* __KVM_X86_MMU_TDP_MMU_H */
