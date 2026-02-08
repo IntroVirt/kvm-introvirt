@@ -143,7 +143,7 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu.c
 ===================================================================
 --- 6.14.0-37-generic.orig/kernel/arch/x86/kvm/mmu/mmu.c
 +++ 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu.c
-@@ -4677,6 +4677,39 @@ bool kvm_mmu_may_ignore_guest_pat(void)
+@@ -4677,6 +4677,42 @@ bool kvm_mmu_may_ignore_guest_pat(void)
  
  int kvm_tdp_page_fault(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault)
  {
@@ -152,8 +152,11 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu.c
 +		/* Look up the fault */
 +		struct kvm *kvm = vcpu->kvm;
 +		struct mem_access_entry *entry;
-+		const u64 gfn = fault->gfn;
 +		bool found_match = false;
++
++		// Looking at mmu_internal.h in __kvm_mmu_do_page_fault() - you can see fault.gfn
++		// is not guarenteed to be set if the root page role is not direct.
++		const u64 gfn = fault->gfn ? fault->gfn : gpa_to_gfn(fault->addr) & ~kvm_gfn_direct_bits(vcpu->kvm);
 +
 +		mutex_lock(&kvm->mem_access_table.mutex);
 +
@@ -183,7 +186,7 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu.c
  #ifdef CONFIG_X86_64
  	if (tdp_mmu_enabled)
  		return kvm_tdp_mmu_page_fault(vcpu, fault);
-@@ -5464,6 +5497,7 @@ static void init_kvm_tdp_mmu(struct kvm_
+@@ -5464,6 +5500,7 @@ static void init_kvm_tdp_mmu(struct kvm_
  	context->cpu_role.as_u64 = cpu_role.as_u64;
  	context->root_role.word = root_role.word;
  	context->page_fault = kvm_tdp_page_fault;
@@ -217,15 +220,17 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/mmu_internal.h
  {
  	struct kvm_page_fault fault = {
  		.addr = cr2_or_gpa,
-@@ -366,6 +369,7 @@ static inline int kvm_mmu_do_page_fault(
+@@ -366,6 +369,9 @@ static inline int kvm_mmu_do_page_fault(
  		.is_private = err & PFERR_PRIVATE_ACCESS,
  
  		.pfn = KVM_PFN_ERR_FAULT,
++
++		/* IntroVirt Patch */
 +		.guest_initiated = guest_initiated,
  	};
  	int r;
  
-@@ -407,6 +411,12 @@ static inline int kvm_mmu_do_page_fault(
+@@ -407,6 +413,12 @@ static inline int kvm_mmu_do_page_fault(
  	return r;
  }
  
