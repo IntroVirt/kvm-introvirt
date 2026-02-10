@@ -1029,7 +1029,7 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/x86.c
  	*mmu_reset_needed |= kvm_read_cr4(vcpu) != sregs->cr4;
  	kvm_x86_call(set_cr4)(vcpu, sregs->cr4);
  
-@@ -13693,6 +14070,259 @@ int kvm_spec_ctrl_test_value(u64 value)
+@@ -13693,6 +14070,260 @@ int kvm_spec_ctrl_test_value(u64 value)
  }
  EXPORT_SYMBOL_GPL(kvm_spec_ctrl_test_value);
  
@@ -1139,7 +1139,8 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/x86.c
 +		if (vcpu->introspection_mm) {
 +			kvm_vcpu_unpause(vcpu);
 +		} else {
-+			printk(KERN_CRIT "IV-x86: vcpu %d, introspection disappeared during handling of event %llu. Not unpausing vCPU???\n", vcpu->vcpu_id, event->event_id);
++			printk(KERN_DEBUG "IV-x86: vcpu %d, introspection disappeared during handling of event %llu. Should we unpause vCPU???? Pause count: %d\n", vcpu->vcpu_id, event->event_id, atomic_read(&vcpu->pause_count));
++			//kvm_vcpu_unpause(vcpu);  This wasn't here before...adding it doesn't seem to do anything.
 +		}
 +
 +		if (mutex_lock_killable(&vcpu->mutex)) {
@@ -1629,7 +1630,7 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
  		waited = true;
  		schedule();
  	}
-@@ -4002,16 +4026,85 @@ static int kvm_vcpu_release(struct inode
+@@ -4002,16 +4026,83 @@ static int kvm_vcpu_release(struct inode
  {
  	struct kvm_vcpu *vcpu = filp->private_data;
  
@@ -1647,13 +1648,11 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
 +	printk(KERN_DEBUG "IV-kvm_main: Introvirt releasing vCPU %d\n", vcpu->vcpu_id);
 +
 +	kvm_vcpu_pause(vcpu);
-+
 +	mutex_lock(&vcpu->mutex);
 +	vcpu_load(vcpu);
 +
 +	// Turn off introspection features
 +	kvm_arch_introspection_cleanup(vcpu);
-+
 +	vcpu->introspection_event = NULL;
 +	vcpu->introspection_event_pending_completion = false;
 +	vcpu->introspection_mm = NULL;
@@ -1668,8 +1667,8 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
 +
 +	// If an introspection event is being delivered, wake that up
 +	wake_up(&vcpu->introspection_event_completed_wait_queue);
-+
 +	kvm_put_kvm(vcpu->kvm);
++
 +	printk(KERN_DEBUG "IV-kvm_main: Introvirt released vCPU %d COMPLETE\n", vcpu->vcpu_id);
 +	return 0;
 +}
@@ -1715,7 +1714,7 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
  };
  
  /*
-@@ -4038,6 +4131,11 @@ static int vcpu_get_pid(void *data, u64
+@@ -4038,6 +4129,11 @@ static int vcpu_get_pid(void *data, u64
  
  DEFINE_SIMPLE_ATTRIBUTE(vcpu_get_pid_fops, vcpu_get_pid, NULL, "%llu\n");
  
@@ -1727,7 +1726,7 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
  static void kvm_create_vcpu_debugfs(struct kvm_vcpu *vcpu)
  {
  	struct dentry *debugfs_dentry;
-@@ -4179,6 +4277,43 @@ vcpu_decrement:
+@@ -4179,6 +4275,43 @@ vcpu_decrement:
  	return r;
  }
  
@@ -1771,7 +1770,7 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
  static int kvm_vcpu_ioctl_set_sigmask(struct kvm_vcpu *vcpu, sigset_t *sigset)
  {
  	if (sigset) {
-@@ -4314,6 +4449,31 @@ static int kvm_wait_for_vcpu_online(stru
+@@ -4314,6 +4447,31 @@ static int kvm_wait_for_vcpu_online(stru
  	return 0;
  }
  
@@ -1803,7 +1802,7 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
  static long kvm_vcpu_ioctl(struct file *filp,
  			   unsigned int ioctl, unsigned long arg)
  {
-@@ -4323,8 +4483,8 @@ static long kvm_vcpu_ioctl(struct file *
+@@ -4323,8 +4481,8 @@ static long kvm_vcpu_ioctl(struct file *
  	struct kvm_fpu *fpu = NULL;
  	struct kvm_sregs *kvm_sregs = NULL;
  
@@ -1814,7 +1813,7 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
  
  	if (unlikely(_IOC_TYPE(ioctl) != KVMIO))
  		return -EINVAL;
-@@ -4346,6 +4506,69 @@ static long kvm_vcpu_ioctl(struct file *
+@@ -4346,6 +4504,69 @@ static long kvm_vcpu_ioctl(struct file *
  	if (r != -ENOIOCTLCMD)
  		return r;
  
@@ -1884,7 +1883,28 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
  	if (mutex_lock_killable(&vcpu->mutex))
  		return -EINTR;
  	switch (ioctl) {
-@@ -5053,8 +5276,8 @@ static long kvm_vm_ioctl(struct file *fi
+@@ -4476,11 +4697,19 @@ out_free1:
+ 	}
+ 	case KVM_SET_GUEST_DEBUG: {
+ 		struct kvm_guest_debug dbg;
++		printk(KERN_DEBUG "IV-kvm_main: KVM_SET_GUEST_DEBUG\n");
+ 
+ 		r = -EFAULT;
+-		if (copy_from_user(&dbg, argp, sizeof(dbg)))
++		if (copy_from_user(&dbg, argp, sizeof(dbg))) {
++			printk(KERN_ERR "IV-kvm_main: KVM_SET_GUEST_DEBUG: copy_from_user failed\n");
+ 			goto out;
++		}
+ 		r = kvm_arch_vcpu_ioctl_set_guest_debug(vcpu, &dbg);
++		if (r) {
++			printk(KERN_ERR "IV-kvm_main: KVM_SET_GUEST_DEBUG: kvm_arch_vcpu_ioctl_set_guest_debug failed. Code: %d\n", r);
++			goto out;
++		}
++		printk(KERN_DEBUG "IV-kvm_main: KVM_SET_GUEST_DEBUG: success\n");
+ 		break;
+ 	}
+ 	case KVM_SET_SIGNAL_MASK: {
+@@ -5053,8 +5282,8 @@ static long kvm_vm_ioctl(struct file *fi
  	void __user *argp = (void __user *)arg;
  	int r;
  
@@ -1895,7 +1915,7 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
  	switch (ioctl) {
  	case KVM_CREATE_VCPU:
  		r = kvm_vm_ioctl_create_vcpu(kvm, arg);
-@@ -5278,6 +5501,9 @@ static long kvm_vm_ioctl(struct file *fi
+@@ -5278,6 +5507,9 @@ static long kvm_vm_ioctl(struct file *fi
  		break;
  	}
  #endif
@@ -1905,7 +1925,7 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
  	default:
  		r = kvm_arch_vm_ioctl(filp, ioctl, arg);
  	}
-@@ -5365,11 +5591,99 @@ static long kvm_vm_compat_ioctl(struct f
+@@ -5365,11 +5597,99 @@ static long kvm_vm_compat_ioctl(struct f
  }
  #endif
  
@@ -2005,7 +2025,7 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
  };
  
  bool file_is_kvm(struct file *file)
-@@ -5421,10 +5735,39 @@ put_fd:
+@@ -5421,10 +5741,39 @@ put_fd:
  	return r;
  }
  
@@ -2045,7 +2065,7 @@ Index: 6.14.0-37-generic/kernel/virt/kvm/kvm_main.c
  
  	switch (ioctl) {
  	case KVM_GET_API_VERSION:
-@@ -5449,6 +5792,57 @@ static long kvm_dev_ioctl(struct file *f
+@@ -5449,6 +5798,57 @@ static long kvm_dev_ioctl(struct file *f
  		r += PAGE_SIZE;    /* coalesced mmio ring page */
  #endif
  		break;
@@ -2107,7 +2127,7 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/tdp_mmu.c
 ===================================================================
 --- 6.14.0-37-generic.orig/kernel/arch/x86/kvm/mmu/tdp_mmu.c
 +++ 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/tdp_mmu.c
-@@ -1948,3 +1948,140 @@ u64 *kvm_tdp_mmu_fast_pf_get_last_sptep(
+@@ -1948,3 +1948,128 @@ u64 *kvm_tdp_mmu_fast_pf_get_last_sptep(
  	 */
  	return rcu_dereference(sptep);
  }
@@ -2120,6 +2140,8 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/tdp_mmu.c
 +	gfn_t gfn_bits;
 +	u64 new_spte;
 +	int result = -ESRCH;
++
++	printk(KERN_DEBUG "Setting permissions 0x%x on gfn 0x%08llx\n", perms, gfn);
 +
 +	// Turn off any extra bits in the perms
 +	perms &= (PT_USER_MASK | PT_WRITABLE_MASK | PT_PRESENT_MASK);
@@ -2155,30 +2177,25 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/tdp_mmu.c
 +	tdp_iter_start(&iter, root, PG_LEVEL_4K, gfn, gfn_bits);
 +
 +	/* Walk to the target SPTE */
-+	printk(KERN_DEBUG "IV-tdp_mmu: Walking to target SPTE\n");
 +	while (iter.valid && iter.gfn <= gfn) {
-+		printk(KERN_DEBUG "IV-tdp_mmu: iter is valid, not at target gfn yet\n");
-+
 +		/* Check if we found the target 4K page */
 +		if (iter.gfn == gfn && iter.level == PG_LEVEL_4K && is_last_spte(iter.old_spte, iter.level)) {
 +			/* Found the target SPTE, modify it */
-+			printk(KERN_DEBUG "IV-tdp_mmu: Found target spte, updating to new permissions\n");
 +			new_spte = (iter.old_spte &  ~(PT_USER_MASK | PT_WRITABLE_MASK | PT_PRESENT_MASK)) | perms;
 +
 +			if (original_perms != NULL) {
-+				printk(KERN_DEBUG "IV-tdp_mmu: Setting original permissions in function output variable\n");
 +				*original_perms = (iter.old_spte & (PT_USER_MASK | PT_WRITABLE_MASK | PT_PRESENT_MASK));
 +			}
 +
 +			/* Atomically update the SPTE */
 +			if (tdp_mmu_set_spte_atomic(vcpu->kvm, &iter, new_spte) != 0) {
-+				printk(KERN_ERR "IV-tdp_mmu: could not update spte, try again.\n");
++				printk(KERN_ERR "IV-tdp_mmu: could not update spte, trying again.\n");
 +				continue;
 +			}
 +
 +			/* Invalidate TLB if needed */
 +			if (is_shadow_present_pte(iter.old_spte) && leaf_spte_change_needs_tlb_flush(iter.old_spte, new_spte)) {
-+				printk(KERN_DEBUG "IV-tdp_mmu: TLB flush needed to update spte\n");
++				printk(KERN_DEBUG "IV-tdp_mmu: TLB flush to update spte\n");
 +				kvm_flush_remote_tlbs_gfn(vcpu->kvm, iter.gfn, iter.level);
 +			}
 +
@@ -2188,25 +2205,18 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/tdp_mmu.c
 +
 +		/* Page not present or not at 4K level - need to page it in */
 +		if (!is_shadow_present_pte(iter.old_spte) || iter.level < PG_LEVEL_4K) {
-+			printk(KERN_DEBUG "IV-tdp_mmu: page not present or not at 4k level\n");
 +			rcu_read_unlock();
-+
-+			/*
-+			 * Use the same path as a guest #PF so the fault is fully
-+			 * built (gfn, slot) and kvm_mmu_faultin_pfn runs before
-+			 * kvm_tdp_mmu_map. error_code 0 = not present, no write/fetch.
-+			 */
 +			{
 +				int r;
 +				struct mm_struct *mm;
 +
-+				printk(KERN_DEBUG "IV-tdp_mmu: injecting page fault to load memory\n");
++				printk(KERN_DEBUG "IV-tdp_mmu: page for gfn 0x%08llx not present. Injecting page fault\n", gfn);
 +				mm = current->mm;
 +				current->mm = vcpu->kvm->mm;
 +				r = __kvm_mmu_do_page_fault(vcpu, gfn << PAGE_SHIFT, 0, false, NULL, NULL, false);
 +				current->mm = mm;
 +				if (r != 0 && r != RET_PF_FIXED && r != RET_PF_SPURIOUS) {
-+					printk(KERN_ERR "IV-mmu: Failed to page in GFN 0x%08llx: %d\n", gfn, r);
++					printk(KERN_ERR "IV-mmu: Failed to page in gfn 0x%08llx. Code: %d\n", gfn, r);
 +					return r;
 +				}
 +			}
@@ -2238,8 +2248,6 @@ Index: 6.14.0-37-generic/kernel/arch/x86/kvm/mmu/tdp_mmu.c
 +
 +		tdp_iter_next(&iter);
 +	}
-+
-+	printk(KERN_DEBUG "IV-mmu: Walk complete\n");
 +	rcu_read_unlock();
 +
 +	if (result != 0 && iter.valid) {
