@@ -18,6 +18,10 @@ jobs:
           - { os: ubuntu-22.04, kernel: 6.8.0-40-generic, codename: jammy, release: 22.04 }
           - { os: ubuntu-24.04, kernel: 6.8.0-41-generic, codename: noble, release: 24.04 }
           - { os: ubuntu-24.04, kernel: 6.8.0-90-generic, codename: noble, release: 24.04 }
+          - { os: ubuntu-24.04, kernel: 6.14.0-37-generic, codename: noble, release: 24.04 }
+          - { os: ubuntu-24.04, kernel: 6.17.0-14-generic, codename: noble, release: 24.04 }
+          - { os: ubuntu-24.04, kernel: 6.8.4-2-pve, codename: pve, release: pve-8.4.0}
+          - { os: ubuntu-24.04, kernel: 6.8.12-9-pve, codename: pve, release: pve-8.4.0}
 
     steps:
       - uses: actions/checkout@v4
