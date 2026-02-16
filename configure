@@ -78,9 +78,6 @@ get_ubuntu_kernel_source() {
             echo "Could not clone Ubuntu kernel source with tag ${kernel_tag}"
             return 1
         fi
-
-        mv linux*"$(echo "$(uname -r)" | cut -d- -f 1 | cut -d. -f1,2)"*/ kernel
-        rm -f linux*.dsc linux*.tar.gz linux*.diff.gz
         return 0
     fi
 
