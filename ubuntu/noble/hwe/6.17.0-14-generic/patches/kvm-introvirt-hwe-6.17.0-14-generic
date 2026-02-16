@@ -271,10 +271,12 @@ Index: 6.17.0-14-generic/kernel/arch/x86/kvm/vmx/main.c
 ===================================================================
 --- 6.17.0-14-generic.orig/kernel/arch/x86/kvm/vmx/main.c
 +++ 6.17.0-14-generic/kernel/arch/x86/kvm/vmx/main.c
-@@ -1006,6 +1006,13 @@ struct kvm_x86_ops vt_x86_ops __initdata
+@@ -1005,7 +1005,14 @@ struct kvm_x86_ops vt_x86_ops __initdata
+ 	.mem_enc_ioctl = vt_op_tdx_only(mem_enc_ioctl),
  	.vcpu_mem_enc_ioctl = vt_op_tdx_only(vcpu_mem_enc_ioctl),
  
- 	.private_max_mapping_level = vt_op_tdx_only(gmem_private_max_mapping_level)
+-	.private_max_mapping_level = vt_op_tdx_only(gmem_private_max_mapping_level)
++	.private_max_mapping_level = vt_op_tdx_only(gmem_private_max_mapping_level),
 +
 +    /* IntroVirt patch */
 +	.update_syscall_intercept = vmx_update_exception_bitmap,
@@ -658,7 +660,7 @@ Index: 6.17.0-14-generic/kernel/arch/x86/kvm/x86.c
 +		if(trap.vector == PF_VECTOR) {
 +			vcpu->arch.cr2 = trap.cr2;
 +		}
-+		kvm_multiple_exception(vcpu, trap.vector, trap.has_error, trap.error_code, false, 0, false);
++		kvm_multiple_exception(vcpu, trap.vector, trap.has_error, trap.error_code, false, 0);
 +		r = 0;
 +
 +		break;
@@ -702,7 +704,7 @@ Index: 6.17.0-14-generic/kernel/arch/x86/kvm/x86.c
 +			break;
 +		}
 +
-+		r = x86_emulate_insn(ctxt);
++		r = x86_emulate_insn(ctxt, false);
 +		if (r != EMULATION_OK)
 +			break;
 +
