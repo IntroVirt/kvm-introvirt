@@ -125,8 +125,6 @@ Once done, or if the patch applied successfully in the first place:
 ```shell
 # Update the .patch file with the changes (if any) to the patch
 quilt refresh
-# Rename the patch for this kernel.
-quilt rename kvm-introvirt-hwe-$(uname -r)
 
 # Generate the header text for the quilt patch
 cat << EOF
