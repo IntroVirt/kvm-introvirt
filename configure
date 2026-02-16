@@ -57,6 +57,12 @@ if [[ ! -d "${_PATCH_DIR}" ]]; then
     exit 1
 fi
 
+cleanup_kernel_source_folder() {
+    mv linux*"$(echo "${_KERNEL_VERSION_FULL}" | cut -d- -f 1 | cut -d. -f1,2)"*/ kernel || { echo "Failed to match kernel directory name"; return 1; }
+    rm -f linux*.dsc linux*.tar.gz linux*.diff.gz
+    return 0
+}
+
 get_ubuntu_kernel_source() {
     local full_ver=""
     local kernel_tag=""
@@ -72,10 +78,24 @@ get_ubuntu_kernel_source() {
             echo "Could not clone Ubuntu kernel source with tag ${kernel_tag}"
             return 1
         fi
+
+        mv linux*"$(echo "$(uname -r)" | cut -d- -f 1 | cut -d. -f1,2)"*/ kernel
+        rm -f linux*.dsc linux*.tar.gz linux*.diff.gz
         return 0
     fi
 
+    # In this case, the `apt-get source linux-image-unsigned-...` should get the correct version
+    if [[ "${_KERNEL_VERSION_FULL}" == "$(uname -r)" ]]; then
+        if ! apt-get source linux-image-unsigned-"${_KERNEL_VERSION_FULL}"; then
+            echo "Unable to find linux-image-unsigned-${_KERNEL_VERSION_FULL} for running kernel. Fallback to apt-cache lookup."
+        else
+            cleanup_kernel_source_folder || return 1
+            return 0
+        fi
+    fi
+
     # Otherwise, try to get the right kernel source from apt.
+    echo "Kernel version full: ${_KERNEL_VERSION_FULL}"
     full_ver=$(apt-cache policy linux-image-unsigned-"${_KERNEL_VERSION_FULL}" | grep "Candidate:" | awk '{print $2}')
     if [[ -z "${full_ver}" || $? -ne 0 ]]; then
         echo "Could not find kernel package linux-image-unsigned-${_KERNEL_VERSION_FULL}"
@@ -92,8 +112,7 @@ get_ubuntu_kernel_source() {
         return 1
     fi
 
-    mv linux*"$(echo "${_KERNEL_VERSION_FULL}" | cut -d- -f 1)/" kernel
-    rm -f linux*.dsc linux*.tar.gz linux*.diff.gz
+    cleanup_kernel_source_folder || return 1
     return 0
 }
 
