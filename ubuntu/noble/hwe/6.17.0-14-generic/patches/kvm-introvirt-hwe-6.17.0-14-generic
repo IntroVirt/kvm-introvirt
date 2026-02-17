@@ -728,17 +728,27 @@ Index: 6.17.0-14-generic/kernel/arch/x86/kvm/x86.c
  	default:
  		r = -EINVAL;
  	}
-@@ -7309,6 +7447,105 @@ set_pit2_out:
+@@ -7309,6 +7447,115 @@ set_pit2_out:
  		r = kvm_vm_ioctl_set_msr_filter(kvm, &filter);
  		break;
  	}
 +	case KVM_SET_MEM_ACCESS_ENABLED: {
++        // We need hardware support for TDP (either EPT from Intel or NPT from AMD eventually...)
++        r = -EINVAL;
++        if (!tdp_enabled) {
++            printk(KERN_ERR "IV-x86: Unable to enable memory access TDP not enabled.\n");
++            goto out;
++        }
++        if (!static_cpu_has(X86_FEATURE_VMX)) {
++            // We only support Intel memory stuff at the moment.
++            printk(KERN_ERR "IV-x86: Unable to enable memory access. CPU is not currently supported for this feature.\n");
++            goto out;
++        }
++
 +		kvm->mem_event_enabled = arg;
 +		printk(KERN_DEBUG "IV-x86: Memory access events %s\n", kvm->mem_event_enabled ? "enabled" : "disabled");
 +
-+		/* TODO: Check if EPT is enabled; it's the only one we support right now. */
-+
-+		r = 0;
++        r = 0;
 +		if (!kvm->mem_event_enabled) {
 +			/* Remove all entries */
 +			kvm_arch_clear_mem_access(kvm);
@@ -834,7 +844,7 @@ Index: 6.17.0-14-generic/kernel/arch/x86/kvm/x86.c
  	default:
  		r = -ENOTTY;
  	}
-@@ -9054,6 +9291,8 @@ int x86_emulate_instruction(struct kvm_v
+@@ -9054,6 +9301,8 @@ int x86_emulate_instruction(struct kvm_v
  	int r;
  	struct x86_emulate_ctxt *ctxt = vcpu->arch.emulate_ctxt;
  	bool writeback = true;
@@ -843,7 +853,7 @@ Index: 6.17.0-14-generic/kernel/arch/x86/kvm/x86.c
  
  	if ((emulation_type & EMULTYPE_ALLOW_RETRY_PF) &&
  	    (WARN_ON_ONCE(is_guest_mode(vcpu)) ||
-@@ -9118,10 +9357,54 @@ int x86_emulate_instruction(struct kvm_v
+@@ -9118,10 +9367,54 @@ int x86_emulate_instruction(struct kvm_v
  		}
  	}
  
@@ -902,7 +912,7 @@ Index: 6.17.0-14-generic/kernel/arch/x86/kvm/x86.c
  	}
  
  	/*
-@@ -9263,6 +9546,11 @@ writeback:
+@@ -9263,6 +9556,11 @@ writeback:
  	} else
  		vcpu->arch.emulate_regs_need_sync_to_vcpu = true;
  
@@ -914,7 +924,7 @@ Index: 6.17.0-14-generic/kernel/arch/x86/kvm/x86.c
  	return r;
  }
  
-@@ -10092,6 +10380,28 @@ EXPORT_SYMBOL_GPL(____kvm_emulate_hyperc
+@@ -10092,6 +10390,28 @@ EXPORT_SYMBOL_GPL(____kvm_emulate_hyperc
  
  int kvm_emulate_hypercall(struct kvm_vcpu *vcpu)
  {
@@ -943,7 +953,7 @@ Index: 6.17.0-14-generic/kernel/arch/x86/kvm/x86.c
  	if (kvm_xen_hypercall_enabled(vcpu->kvm))
  		return kvm_xen_hypercall(vcpu);
  
-@@ -11277,6 +11587,26 @@ static int vcpu_run(struct kvm_vcpu *vcp
+@@ -11277,6 +11597,26 @@ static int vcpu_run(struct kvm_vcpu *vcp
  			r = vcpu_block(vcpu);
  		}
  
@@ -970,7 +980,7 @@ Index: 6.17.0-14-generic/kernel/arch/x86/kvm/x86.c
  		if (r <= 0)
  			break;
  
-@@ -11307,6 +11637,47 @@ static int vcpu_run(struct kvm_vcpu *vcp
+@@ -11307,6 +11647,47 @@ static int vcpu_run(struct kvm_vcpu *vcp
  	return r;
  }
  
@@ -1018,7 +1028,7 @@ Index: 6.17.0-14-generic/kernel/arch/x86/kvm/x86.c
  static int __kvm_emulate_halt(struct kvm_vcpu *vcpu, int state, int reason)
  {
  	/*
-@@ -11965,6 +12336,12 @@ static int __set_sregs_common(struct kvm
+@@ -11965,6 +12346,12 @@ static int __set_sregs_common(struct kvm
  	*mmu_reset_needed |= kvm_read_cr0(vcpu) != sregs->cr0;
  	kvm_x86_call(set_cr0)(vcpu, sregs->cr0);
  
@@ -1031,7 +1041,7 @@ Index: 6.17.0-14-generic/kernel/arch/x86/kvm/x86.c
  	*mmu_reset_needed |= kvm_read_cr4(vcpu) != sregs->cr4;
  	kvm_x86_call(set_cr4)(vcpu, sregs->cr4);
  
-@@ -13614,6 +13991,260 @@ int kvm_spec_ctrl_test_value(u64 value)
+@@ -13614,6 +14001,260 @@ int kvm_spec_ctrl_test_value(u64 value)
  }
  EXPORT_SYMBOL_GPL(kvm_spec_ctrl_test_value);
  
