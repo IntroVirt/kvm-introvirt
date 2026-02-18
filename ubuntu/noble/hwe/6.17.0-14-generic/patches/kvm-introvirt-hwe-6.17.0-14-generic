@@ -2282,3 +2282,89 @@ Index: 6.17.0-14-generic/kernel/arch/x86/kvm/mmu/tdp_mmu.h
 +int kvm_tdp_set_pte_perms(struct kvm_vcpu *vcpu, u64 gfn, uint8_t perms, uint8_t* original_perms);
 +
  #endif /* __KVM_X86_MMU_TDP_MMU_H */
+Index: 6.17.0-14-generic/kernel/arch/x86/kvm/svm/svm.c
+===================================================================
+--- 6.17.0-14-generic.orig/kernel/arch/x86/kvm/svm/svm.c
++++ 6.17.0-14-generic/kernel/arch/x86/kvm/svm/svm.c
+@@ -253,6 +253,10 @@ int svm_set_efer(struct kvm_vcpu *vcpu,
+ 		}
+ 	}
+ 
++	/* IntroVirt: hide SYSCALL from guest when syscall hook enabled (guest sees SCE=0, SYSCALL causes #UD) */
++	if (vcpu->syscall_hook_enabled)
++		efer &= ~EFER_SCE;
++
+ 	svm->vmcb->save.efer = efer | EFER_SVME;
+ 	vmcb_mark_dirty(svm->vmcb, VMCB_CR);
+ 	return 0;
+@@ -1837,6 +1841,46 @@ static void svm_update_exception_bitmap(
+ 	}
+ }
+ 
++/* IntroVirt: syscall hook uses #UD (EFER.SCE hidden in svm_set_efer); ensure #UD is intercepted when enabled */
++static void svm_update_syscall_intercept(struct kvm_vcpu *vcpu)
++{
++	struct vcpu_svm *svm = to_svm(vcpu);
++
++	if (vcpu->syscall_hook_enabled)
++		set_exception_intercept(svm, UD_VECTOR);
++	/* when disabled, leave UD as per init (already set) so normal #UD still exits */
++	vmcb_mark_dirty(svm->vmcb, VMCB_INTERCEPTS);
++}
++
++/* IntroVirt stubs (AMD: no CR/MTF/INVLPG/memory-feature support; syscall only) */
++static int svm_set_cr_monitor(struct kvm_vcpu *vcpu, int cr, int mode)
++{
++	(void)vcpu;
++	(void)cr;
++	(void)mode;
++	return 0;
++}
++
++static int svm_set_monitor_trap_flag(struct kvm_vcpu *vcpu, bool enabled)
++{
++	(void)vcpu;
++	(void)enabled;
++	return 0;
++}
++
++static int svm_set_invlpg_monitor(struct kvm_vcpu *vcpu, bool enabled)
++{
++	(void)vcpu;
++	(void)enabled;
++	return 0;
++}
++
++static bool svm_hap_permissions_allowed(uint16_t perms)
++{
++	(void)perms;
++	return true;
++}
++
+ static void new_asid(struct vcpu_svm *svm, struct svm_cpu_data *sd)
+ {
+ 	if (sd->next_asid > sd->max_asid) {
+@@ -2743,7 +2787,8 @@ static int svm_get_msr(struct kvm_vcpu *
+ 		break;
+ #endif
+ 	case MSR_IA32_SYSENTER_CS:
+-		msr_info->data = svm->vmcb01.ptr->save.sysenter_cs;
++		/* IntroVirt: return shadow so guest sees consistent value */
++		msr_info->data = vcpu->shadow_msr_ia32_sysenter_cs;
+ 		break;
+ 	case MSR_IA32_SYSENTER_EIP:
+ 		msr_info->data = (u32)svm->vmcb01.ptr->save.sysenter_eip;
+@@ -5162,6 +5207,13 @@ static struct kvm_x86_ops svm_x86_ops __
+ 	.gmem_prepare = sev_gmem_prepare,
+ 	.gmem_invalidate = sev_gmem_invalidate,
+ 	.private_max_mapping_level = sev_private_max_mapping_level,
++
++	/* IntroVirt: syscall monitoring on AMD; other features stubbed */
++	.set_cr_monitor = svm_set_cr_monitor,
++	.set_monitor_trap_flag = svm_set_monitor_trap_flag,
++	.set_invlpg_monitor = svm_set_invlpg_monitor,
++	.hap_permissions_allowed = svm_hap_permissions_allowed,
++	.update_syscall_intercept = svm_update_syscall_intercept,
+ };
+ 
+ /*
