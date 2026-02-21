@@ -733,22 +733,22 @@ Index: 6.17.0-14-generic/kernel/arch/x86/kvm/x86.c
  		break;
  	}
 +	case KVM_SET_MEM_ACCESS_ENABLED: {
-+        // We need hardware support for TDP (either EPT from Intel or NPT from AMD eventually...)
-+        r = -EINVAL;
-+        if (!tdp_enabled) {
-+            printk(KERN_ERR "IV-x86: Unable to enable memory access TDP not enabled.\n");
-+            goto out;
-+        }
-+        if (!static_cpu_has(X86_FEATURE_VMX)) {
-+            // We only support Intel memory stuff at the moment.
-+            printk(KERN_ERR "IV-x86: Unable to enable memory access. CPU is not currently supported for this feature.\n");
-+            goto out;
-+        }
++		// We need hardware support for TDP (either EPT from Intel or NPT from AMD eventually...)
++		r = -EINVAL;
++		if (!tdp_enabled) {
++			printk(KERN_ERR "IV-x86: Unable to enable memory access TDP not enabled.\n");
++			goto out;
++		}
++		if (!static_cpu_has(X86_FEATURE_VMX)) {
++			// We only support Intel memory stuff at the moment.
++			printk(KERN_ERR "IV-x86: Unable to enable memory access. CPU is not currently supported for this feature.\n");
++			goto out;
++		}
 +
 +		kvm->mem_event_enabled = arg;
 +		printk(KERN_DEBUG "IV-x86: Memory access events %s\n", kvm->mem_event_enabled ? "enabled" : "disabled");
 +
-+        r = 0;
++		r = 0;
 +		if (!kvm->mem_event_enabled) {
 +			/* Remove all entries */
 +			kvm_arch_clear_mem_access(kvm);
@@ -1041,10 +1041,50 @@ Index: 6.17.0-14-generic/kernel/arch/x86/kvm/x86.c
  	*mmu_reset_needed |= kvm_read_cr4(vcpu) != sregs->cr4;
  	kvm_x86_call(set_cr4)(vcpu, sregs->cr4);
  
-@@ -13614,6 +14001,260 @@ int kvm_spec_ctrl_test_value(u64 value)
+@@ -13614,6 +14001,257 @@ int kvm_spec_ctrl_test_value(u64 value)
  }
  EXPORT_SYMBOL_GPL(kvm_spec_ctrl_test_value);
  
++static void kvm_log_introspection_event(struct kvm_vcpu* vcpu, struct kvm_introspection_event* event, bool completed)
++{
++	switch(event->event_type) {
++	case KVM_EVENT_SHUTDOWN:
++		printk(KERN_DEBUG "IV-x86: KVM_EVENT_SHUTDOWN, vCPU %d, event: %llu, %s\n", vcpu->vcpu_id, event->event_id, completed ? "completed" : "incomplete");
++		break;
++	case KVM_EVENT_REBOOT:
++		printk(KERN_DEBUG "IV-x86: KVM_EVENT_REBOOT, vCPU %d, event: %llu, %s\n", vcpu->vcpu_id, event->event_id, completed ? "completed" : "incomplete");
++		break;
++#ifdef KVM_INTROVIRT_TRACE_EVENTS
++#if KVM_INTROVIRT_TRACE_EVENTS >= 1
++	case KVM_EVENT_HYPERCALL:
++		printk(KERN_DEBUG "IV-x86: KVM_EVENT_HYPERCALL, vCPU %d, event: %llu, %s\n", vcpu->vcpu_id, event->event_id, completed ? "completed" : "incomplete");
++		break;
++	case KVM_EVENT_INVLPG:
++		printk(KERN_DEBUG "IV-x86: KVM_EVENT_INVLPG, vCPU %d, event: %llu, %s\n", vcpu->vcpu_id, event->event_id, completed ? "completed" : "incomplete");
++		break;
++#endif
++#if KVM_INTROVIRT_TRACE_EVENTS >= 2
++	case KVM_EVENT_SINGLE_STEP:
++		printk(KERN_DEBUG "IV-x86: KVM_EVENT_SINGLE_STEP, vCPU %d, event: %llu, %s\n", vcpu->vcpu_id, event->event_id, completed ? "completed" : "incomplete");
++		break;
++	case KVM_EVENT_EXCEPTION:
++		printk(KERN_DEBUG "IV-x86: KVM_EVENT_EXCEPTION, vCPU %d, event: %llu, %s\n", vcpu->vcpu_id, event->event_id, completed ? "completed" : "incomplete");
++		break;
++#endif
++#if KVM_INTROVIRT_TRACE_EVENTS >= 3
++	case KVM_EVENT_FAST_SYSCALL:
++		printk(KERN_DEBUG "IV-x86: KVM_EVENT_FAST_SYSCALL, vCPU %d, event: %llu, %s\n", vcpu->vcpu_id, event->event_id, completed ? "completed" : "incomplete");
++		break;
++	case KVM_EVENT_FAST_SYSCALL_RET:
++		printk(KERN_DEBUG "IV-x86: KVM_EVENT_FAST_SYSCALL_RET, vCPU %d, event: %llu, %s\n", vcpu->vcpu_id, event->event_id, completed ? "completed" : "incomplete");
++		break;
++#endif
++#endif
++	default:
++		break;
++	}
++}
++
 +static void kvm_deliver_introspection_event(struct kvm_vcpu* vcpu, struct kvm_introspection_event* event)
 +{
 +	if (!vcpu->introspection_mm) {
@@ -1085,29 +1125,8 @@ Index: 6.17.0-14-generic/kernel/arch/x86/kvm/x86.c
 +		mutex_unlock(&vcpu->mutex);
 +	}
 +
-+	switch(event->event_type) {
-+	case KVM_EVENT_SHUTDOWN:
-+		printk(KERN_DEBUG "IV-x86: KVM_EVENT_SHUTDOWN, vCPU %d, event: %llu\n", vcpu->vcpu_id, event->event_id);
-+		break;
-+	case KVM_EVENT_REBOOT:
-+		printk(KERN_DEBUG "IV-x86: KVM_EVENT_REBOOT, vCPU %d, event: %llu\n", vcpu->vcpu_id, event->event_id);
-+		break;
-+	case KVM_EVENT_HYPERCALL:
-+		printk(KERN_DEBUG "IV-x86: KVM_EVENT_HYPERCALL, vCPU %d, event: %llu\n", vcpu->vcpu_id, event->event_id);
-+		break;
-+	case KVM_EVENT_EXCEPTION:
-+		printk(KERN_DEBUG "IV-x86: KVM_EVENT_EXCEPTION, vCPU %d, event: %llu\n", vcpu->vcpu_id, event->event_id);
-+		break;
-+	case KVM_EVENT_INVLPG:
-+		printk(KERN_DEBUG "IV-x86: KVM_EVENT_INVLPG, vCPU %d, event: %llu\n", vcpu->vcpu_id, event->event_id);
-+		break;
-+	case KVM_EVENT_SINGLE_STEP:
-+		printk(KERN_DEBUG "IV-x86: KVM_EVENT_SINGLE_STEP, vCPU %d, event: %llu\n", vcpu->vcpu_id, event->event_id);
-+		break;
-+	default:
-+		//printk(KERN_DEBUG "IV-x86: event type %d, vCPU %d, event: %llu\n", event->event_type, vcpu->vcpu_id, event->event_id);
-+		break;
-+	}
++	/* Trace logging */
++	kvm_log_introspection_event(vcpu, event, false);
 +
 +	/*
 +	 * Wake up the userland call to poll()
@@ -1119,29 +1138,8 @@ Index: 6.17.0-14-generic/kernel/arch/x86/kvm/x86.c
 +	 */
 +	wait_event(vcpu->introspection_event_completed_wait_queue, vcpu->introspection_event_pending_completion == false);
 +
-+	switch(event->event_type) {
-+	case KVM_EVENT_SHUTDOWN:
-+		printk(KERN_DEBUG "IV-x86: KVM_EVENT_SHUTDOWN, vCPU %d, event: %llu completed\n", vcpu->vcpu_id, event->event_id);
-+		break;
-+	case KVM_EVENT_REBOOT:
-+		printk(KERN_DEBUG "IV-x86: KVM_EVENT_REBOOT, vCPU %d, event: %llu completed\n", vcpu->vcpu_id, event->event_id);
-+		break;
-+	case KVM_EVENT_HYPERCALL:
-+		printk(KERN_DEBUG "IV-x86: KVM_EVENT_HYPERCALL, vCPU %d, event: %llu completed\n", vcpu->vcpu_id, event->event_id);
-+		break;
-+	case KVM_EVENT_EXCEPTION:
-+		printk(KERN_DEBUG "IV-x86: KVM_EVENT_EXCEPTION, vCPU %d, event: %llu completed\n", vcpu->vcpu_id, event->event_id);
-+		break;
-+	case KVM_EVENT_INVLPG:
-+		printk(KERN_DEBUG "IV-x86: KVM_EVENT_INVLPG, vCPU %d, event: %llu completed\n", vcpu->vcpu_id, event->event_id);
-+		break;
-+	case KVM_EVENT_SINGLE_STEP:
-+		printk(KERN_DEBUG "IV-x86: KVM_EVENT_SINGLE_STEP, vCPU %d, event: %llu completed\n", vcpu->vcpu_id, event->event_id);
-+		break;
-+	default:
-+		//printk(KERN_DEBUG "IV-x86: event type %d, vCPU %d, event: %llu completed\n", event->event_type, vcpu->vcpu_id, event->event_id);
-+		break;
-+	}
++	/* Trace logging */
++	kvm_log_introspection_event(vcpu, event, true);
 +
 +	/*
 +	* If we're still being introspected, decrement the pause count.
@@ -1151,12 +1149,11 @@ Index: 6.17.0-14-generic/kernel/arch/x86/kvm/x86.c
 +		if (vcpu->introspection_mm) {
 +			kvm_vcpu_unpause(vcpu);
 +		} else {
-+			printk(KERN_DEBUG "IV-x86: vcpu %d, introspection disappeared during handling of event %llu. Should we unpause vCPU???? Pause count: %d\n", vcpu->vcpu_id, event->event_id, atomic_read(&vcpu->pause_count));
-+			//kvm_vcpu_unpause(vcpu);  This wasn't here before...adding it doesn't seem to do anything.
++			printk(KERN_ERR "IV-x86: vcpu %d, introspection disappeared during handling of event %llu. Should we unpause vCPU???? Pause count: %d\n", vcpu->vcpu_id, event->event_id, atomic_read(&vcpu->pause_count));
 +		}
 +
 +		if (mutex_lock_killable(&vcpu->mutex)) {
-+			printk(KERN_DEBUG "IV-x86: mutex lock was killable. returning now, not running vcpu_load(vcpu)??? vCPU %d\n", vcpu->vcpu_id);
++			printk(KERN_WARNING "IV-x86: mutex lock was killable. returning now, not running vcpu_load(vcpu)??? vCPU %d\n", vcpu->vcpu_id);
 +			return;
 +		}
 +		vcpu_load(vcpu);
