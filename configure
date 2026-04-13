@@ -76,6 +76,7 @@ get_ubuntu_kernel_source() {
         echo "ubuntu-kernel-tag file found in patch directory ${_PATCH_DIR}. Cloning specified tag: ${kernel_tag}."
         if ! git clone --depth 1 --branch "${kernel_tag}" "${repo_url}" ./kernel; then
             echo "Could not clone Ubuntu kernel source with tag ${kernel_tag}"
+	    echo "Try \"git ls-remote ${repo_url}\" and search for the appropriate branch for ${kernel_tag}."
             return 1
         fi
         return 0
