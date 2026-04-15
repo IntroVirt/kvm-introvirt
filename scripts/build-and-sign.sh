@@ -3,16 +3,12 @@
 # Helper script to build a kvm-introvirt deb with signed .ko files.
 # Will sign kernel modules with your own MOK key.
 # Run from the root of the repo
+# Only designed for Ubuntu kernels and only if the running kernel is the same as the one being built.
 
 set -e
 
 if [[ $# -ne 1 ]]; then
     echo "Usage: $0 <path-to-signing-key-dir>"
-    exit 1
-fi
-
-if [[ $EUID -ne 0 ]]; then
-    echo "This script must be run as root"
     exit 1
 fi
 

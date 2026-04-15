@@ -31,6 +31,11 @@ echo "Creating new patch directory ${NEW_PATCH_DIR} from ${STARTING_PATCH_DIR}..
 mkdir -p "${NEW_PATCH_DIR}"
 cp -r "${STARTING_PATCH_DIR}/patches" "${NEW_PATCH_DIR}/"
 sed -i "s/${ORIG_KERNEL_VERSION_FULL}/${NEW_KERNEL_VERSION_FULL}/g" "${NEW_PATCH_DIR}/patches/kvm-introvirt-hwe-${ORIG_KERNEL_VERSION_FULL}"
+sed -i "s/${ORIG_KERNEL_VERSION_FULL}/${NEW_KERNEL_VERSION_FULL}/g" "${NEW_PATCH_DIR}/patches/series"
+
+echo "Renaming patch files..."
+mv "${NEW_PATCH_DIR}/patches/kvm-introvirt-hwe-${ORIG_KERNEL_VERSION_FULL}" "${NEW_PATCH_DIR}/patches/kvm-introvirt-hwe-${NEW_KERNEL_VERSION_FULL}"
+rm -f "${NEW_PATCH_DIR}/patches/kvm-introvirt-hwe-${ORIG_KERNEL_VERSION_FULL}~"
 
 echo "Configuring for new kernel version ${NEW_KERNEL_VERSION_FULL}..."
 KERNEL_VERSION_FULL=${NEW_KERNEL_VERSION_FULL} \
@@ -41,9 +46,6 @@ if [[ $ret -ne 0 ]]; then
     echo "Configuration failed! See output above. Manual patching may be required."
     exit $ret
 fi
-
-echo "Updating quilt metadata..."
-quilt rename kvm-introvirt-hwe-"${NEW_KERNEL_VERSION_FULL}"
 
 echo "Patch created successfully in ${NEW_PATCH_DIR}"
 echo "Update the quilt header, branch, and create a PR. Instructions in README.md"

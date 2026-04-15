@@ -92,6 +92,16 @@ mkdir -p ubuntu/$(lsb_release -sc)/hwe/$(uname -r)
 # Whichever kernel is closest to the one you're patching
 cp -r ubuntu/<codename>/hwe/<kernel>/patches ubuntu/$(lsb_release -sc)/hwe/$(uname -r)/
 
+# Update the patch files with the new kernel version
+sed -i "s/6.14.0-37-generic/$(uname -r)/g" ubuntu/$(lsb_release -sc)/hwe/$(uname -r)/patches/*
+
+# Update the patch filename
+mv ubuntu/$(lsb_release -sc)/hwe/$(uname -r)/patches/kvm-introvirt-hwe-* ubuntu/$(lsb_release -sc)/hwe/$(uname -r)/patches/kvm-introvirt-hwe-$(uname -r)
+
+# For Ubuntu 24.04 and later - add the deb-src repos
+sudo sed -Ei 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+sudo apt update
+
 # Set your email/name to be used in the changelog which is updated by ./configure
 # if those variables are set
 export DEBEMAIL="<your_email>"
@@ -115,8 +125,6 @@ Once done, or if the patch applied successfully in the first place:
 ```shell
 # Update the .patch file with the changes (if any) to the patch
 quilt refresh
-# Rename the patch for this kernel.
-quilt rename kvm-introvirt-hwe-$(uname -r)
 
 # Generate the header text for the quilt patch
 cat << EOF
