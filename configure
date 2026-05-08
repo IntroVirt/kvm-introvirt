@@ -50,6 +50,13 @@ if [[ ${_LSB_CODENAME} == "pve" ]]; then
     _DEB_DEPENDS="proxmox-kernel-${_KERNEL_VERSION_FULL}-signed"
 fi
 
+if [[ "${_PATCH_DIR}" =~ "WSL2" ]]; then
+    echo "Using WSL2 patch directory structure."
+    _USE_KERNEL_CONFIG=$(realpath "${_PATCH_DIR}/kernel/Microsoft/config-wsl")
+    _KERNEL_SYMVERS_FILE=$(realpath "${_PATCH_DIR}/Module.symvers")
+    _DEB_DEPENDS=""
+fi
+
 # Make sure we actually have a patch directory to work with
 if [[ ! -d "${_PATCH_DIR}" ]]; then
     echo "No patch for ${_KERNEL_VERSION_FULL} in ${_LSB_CODENAME} HWE."
@@ -174,11 +181,39 @@ get_pve_kernel_source() {
     return 0
 }
 
+get_wsl2_kernel_source() {
+    local release_link=""
+
+    echo "Getting WSL2 Ubuntu kernel source. This could take a bit..."
+
+    if [[ ! -f "wsl-release-link" ]]; then
+        echo "No wsl-release-link file found in patch directory ${_PATCH_DIR}"
+        return 1
+    fi
+
+    release_link="$(cat wsl-release-link)"
+    mkdir -p kernel
+    pushd kernel > /dev/null || return 1
+    if ! wget -O- "${release_link}" | tar xz --strip-components=1; then
+        echo "Could not download and extract WSL2 kernel source from ${release_link}"
+        return 1
+    fi
+    popd > /dev/null || return 1
+
+    return 0
+}
+
 pushd "${_PATCH_DIR}" > /dev/null || exit 1
 
 if [[ ! -d "./kernel" ]]; then
     if [[ "${_PATCH_DIR%%/*}" == "pve" ]]; then
         if ! get_pve_kernel_source; then
+            ret=$?
+            popd > /dev/null || exit 1
+            exit $ret
+        fi
+    elif [[ "${_PATCH_DIR}" =~ "WSL2" ]]; then
+        if ! get_wsl2_kernel_source; then
             ret=$?
             popd > /dev/null || exit 1
             exit $ret
@@ -259,8 +294,6 @@ kvm-introvirt (${_KERNEL_VERSION_FULL}.${_LSB_RELEASE}-${_PATCH_VERSION}~${_LSB_
 
  -- ${_FULLNAME} <${_EMAIL}>  $(date -u)
 EOF
-
-
 
 # Build the control
 truncate -s0 debpkg/DEBIAN/control
