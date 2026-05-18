@@ -49,6 +49,7 @@ jobs:
           - { os: ubuntu-24.04, kernel: 6.17.0-20-generic, codename: noble, release: 24.04 }
           - { os: ubuntu-24.04, kernel: 6.17.0-22-generic, codename: noble, release: 24.04 }
           - { os: ubuntu-24.04, kernel: 6.17.0-23-generic, codename: noble, release: 24.04 }
+          - { os: ubuntu-24.04, kernel: 6.17.0-29-generic, codename: noble, release: 24.04 }
           - { os: ubuntu-24.04, kernel: 6.8.4-2-pve, codename: pve, release: pve-8.4.0}
           - { os: ubuntu-24.04, kernel: 6.8.12-9-pve, codename: pve, release: pve-8.4.0}
 
