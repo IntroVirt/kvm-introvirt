@@ -5,7 +5,7 @@
 [![CI Tests](https://github.com/IntroVirt/kvm-introvirt/actions/workflows/ci.yml/badge.svg)](https://github.com/IntroVirt/kvm-introvirt/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-IntroVirt KVM module. Intel CPUs have full support. AMD CPUs are lacking support for breakpoints but syscall tracing should work.
+IntroVirt KVM module. Intel CPUs have full support. AMD CPUs are lacking support for breakpoints/watchpoints but system call tracing works.
 
 ## Installation Instructions
 
