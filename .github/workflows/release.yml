@@ -34,9 +34,13 @@ jobs:
           sudo apt-get install -y bc devscripts quilt git flex bison \
             libssl-dev libelf-dev debhelper libncurses-dev gawk openssl \
             dkms libudev-dev libpci-dev libiberty-dev autoconf llvm \
-            libdw-dev dwarves libdwarf-dev \
-            linux-headers-${{ matrix.config.kernel }} \
-            linux-modules-${{ matrix.config.kernel }}
+            libdw-dev dwarves libdwarf-dev
+
+          if [[ "${{ matrix.config.codename }}" == "pve" ]]; then
+              sudo apt-get install -y \
+              linux-headers-${{ matrix.config.kernel }} \
+              linux-modules-${{ matrix.config.kernel }}
+          fi
 
           # Enable source repos to get kernel source
           sudo sed -i '/^#\s*deb-src /s/^# *//' /etc/apt/sources.list
@@ -52,11 +56,7 @@ jobs:
           LSB_CODENAME=${{ matrix.config.codename}} \
           LSB_RELEASE=${{ matrix.config.release}} \
           USE_KERNEL_CONFIG=/usr/src/linux-headers-${{ matrix.config.kernel }}/.config \
-          ./configure || { test $? -eq 2 && ret=2 && exit 0 || exit 1; }
-          if [[ $ret -eq 2 ]]; then
-              echo "Cannot automate this kernel build. Could not find kernel source in apt or git for this version!"
-              exit 0
-          fi
+          ./configure
           make -j$(nproc) package
         shell: bash
       - name: Archive debian packages
