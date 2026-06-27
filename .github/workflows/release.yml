@@ -36,7 +36,7 @@ jobs:
             dkms libudev-dev libpci-dev libiberty-dev autoconf llvm \
             libdw-dev dwarves libdwarf-dev
 
-          if [[ "${{ matrix.config.codename }}" == "pve" ]]; then
+          if [[ "${{ matrix.config.codename }}" != "pve" ]]; then
               sudo apt-get install -y \
               linux-headers-${{ matrix.config.kernel }} \
               linux-modules-${{ matrix.config.kernel }}
