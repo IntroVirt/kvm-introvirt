@@ -194,6 +194,14 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/mmu/mmu.c
  	context->sync_spte = NULL;
  	context->get_guest_pgd = get_guest_cr3;
  	context->get_pdptr = kvm_pdptr_read;
+@@ -6459,6 +6496,7 @@ void kvm_mmu_invlpg(struct kvm_vcpu *vcp
+ 	 */
+ 	kvm_mmu_invalidate_addr(vcpu, vcpu->arch.walk_mmu, gva, KVM_MMU_ROOTS_ALL);
+ 	++vcpu->stat.invlpg;
++	kvm_deliver_invlpg_event(vcpu, gva);
+ }
+ EXPORT_SYMBOL_GPL(kvm_mmu_invlpg);
+ 
 Index: 6.17.0-35-generic/kernel/arch/x86/kvm/mmu/mmu_internal.h
 ===================================================================
 --- 6.17.0-35-generic.orig/kernel/arch/x86/kvm/mmu/mmu_internal.h
@@ -729,20 +737,15 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/x86.c
  	default:
  		r = -EINVAL;
  	}
-@@ -7305,6 +7444,115 @@ set_pit2_out:
+@@ -7305,6 +7444,110 @@ set_pit2_out:
  		r = kvm_vm_ioctl_set_msr_filter(kvm, &filter);
  		break;
  	}
 +	case KVM_SET_MEM_ACCESS_ENABLED: {
-+		// We need hardware support for TDP (either EPT from Intel or NPT from AMD eventually...)
++		/* Requires TDP: Intel EPT or AMD NPT */
 +		r = -EINVAL;
 +		if (!tdp_enabled) {
 +			printk(KERN_ERR "IV-x86: Unable to enable memory access TDP not enabled.\n");
-+			goto out;
-+		}
-+		if (!static_cpu_has(X86_FEATURE_VMX)) {
-+			// We only support Intel memory stuff at the moment.
-+			printk(KERN_ERR "IV-x86: Unable to enable memory access. CPU is not currently supported for this feature.\n");
 +			goto out;
 +		}
 +
@@ -845,7 +848,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/x86.c
  	default:
  		r = -ENOTTY;
  	}
-@@ -9067,6 +9315,8 @@ int x86_emulate_instruction(struct kvm_v
+@@ -9067,6 +9310,8 @@ int x86_emulate_instruction(struct kvm_v
  	int r;
  	struct x86_emulate_ctxt *ctxt = vcpu->arch.emulate_ctxt;
  	bool writeback = true;
@@ -854,7 +857,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/x86.c
  
  	if ((emulation_type & EMULTYPE_ALLOW_RETRY_PF) &&
  	    (WARN_ON_ONCE(is_guest_mode(vcpu)) ||
-@@ -9131,10 +9381,54 @@ int x86_emulate_instruction(struct kvm_v
+@@ -9131,10 +9376,54 @@ int x86_emulate_instruction(struct kvm_v
  		}
  	}
  
@@ -913,7 +916,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/x86.c
  	}
  
  	/*
-@@ -9280,6 +9574,11 @@ writeback:
+@@ -9280,6 +9569,11 @@ writeback:
  	} else
  		vcpu->arch.emulate_regs_need_sync_to_vcpu = true;
  
@@ -925,7 +928,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/x86.c
  	return r;
  }
  
-@@ -10109,6 +10408,28 @@ EXPORT_SYMBOL_GPL(____kvm_emulate_hyperc
+@@ -10109,6 +10403,28 @@ EXPORT_SYMBOL_GPL(____kvm_emulate_hyperc
  
  int kvm_emulate_hypercall(struct kvm_vcpu *vcpu)
  {
@@ -954,7 +957,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/x86.c
  	if (kvm_xen_hypercall_enabled(vcpu->kvm))
  		return kvm_xen_hypercall(vcpu);
  
-@@ -11294,6 +11615,26 @@ static int vcpu_run(struct kvm_vcpu *vcp
+@@ -11294,6 +11610,26 @@ static int vcpu_run(struct kvm_vcpu *vcp
  			r = vcpu_block(vcpu);
  		}
  
@@ -981,7 +984,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/x86.c
  		if (r <= 0)
  			break;
  
-@@ -11324,6 +11665,47 @@ static int vcpu_run(struct kvm_vcpu *vcp
+@@ -11324,6 +11660,47 @@ static int vcpu_run(struct kvm_vcpu *vcp
  	return r;
  }
  
@@ -1029,7 +1032,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/x86.c
  static int __kvm_emulate_halt(struct kvm_vcpu *vcpu, int state, int reason)
  {
  	/*
-@@ -11982,6 +12364,12 @@ static int __set_sregs_common(struct kvm
+@@ -11982,6 +12359,12 @@ static int __set_sregs_common(struct kvm
  	*mmu_reset_needed |= kvm_read_cr0(vcpu) != sregs->cr0;
  	kvm_x86_call(set_cr0)(vcpu, sregs->cr0);
  
@@ -1042,7 +1045,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/x86.c
  	*mmu_reset_needed |= kvm_read_cr4(vcpu) != sregs->cr4;
  	kvm_x86_call(set_cr4)(vcpu, sregs->cr4);
  
-@@ -13631,6 +14019,257 @@ int kvm_spec_ctrl_test_value(u64 value)
+@@ -13631,6 +14014,257 @@ int kvm_spec_ctrl_test_value(u64 value)
  }
  EXPORT_SYMBOL_GPL(kvm_spec_ctrl_test_value);
  
@@ -2306,7 +2309,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/svm/svm.c
  
  #ifdef CONFIG_X86_64
  	svm_disable_intercept_for_msr(vcpu, MSR_GS_BASE, MSR_TYPE_RW);
-@@ -1847,6 +1853,79 @@ static void svm_update_exception_bitmap(
+@@ -1847,6 +1853,108 @@ static void svm_update_exception_bitmap(
  	}
  }
  
@@ -2361,32 +2364,75 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/svm/svm.c
 +	return 0;
 +}
 +
-+/* IntroVirt stubs (AMD: no MTF/INVLPG/memory-feature support) */
++/* IntroVirt: AMD uses TF+#DB for single-step (no MTF), NPT for mem watchpoints */
 +
 +static int svm_set_monitor_trap_flag(struct kvm_vcpu *vcpu, bool enabled)
 +{
-+	(void)vcpu;
-+	(void)enabled;
++	unsigned long rflags;
++
++	vcpu->monitor_trap_flag = enabled;
++	rflags = kvm_get_rflags(vcpu);
++
++	if (enabled)
++		rflags |= X86_EFLAGS_TF;
++	else
++		rflags &= ~X86_EFLAGS_TF;
++
++	kvm_set_rflags(vcpu, rflags);
++	printk(KERN_DEBUG "IV-svm: monitor trap flag %s on vCPU %d\n",
++	       enabled ? "enabled" : "disabled", vcpu->vcpu_id);
 +	return 0;
 +}
 +
 +static int svm_set_invlpg_monitor(struct kvm_vcpu *vcpu, bool enabled)
 +{
-+	(void)vcpu;
-+	(void)enabled;
++	struct vcpu_svm *svm = to_svm(vcpu);
++
++	vcpu->invlpg_hook = enabled;
++
++	if (enabled)
++		svm_set_intercept(svm, INTERCEPT_INVLPG);
++	else if (npt_enabled)
++		svm_clr_intercept(svm, INTERCEPT_INVLPG);
++
++	vmcb_mark_dirty(svm->vmcb, VMCB_INTERCEPTS);
++	printk(KERN_DEBUG "IV-svm: invlpg hook %s on vCPU %d\n",
++	       enabled ? "enabled" : "disabled", vcpu->vcpu_id);
 +	return 0;
 +}
 +
 +static bool svm_hap_permissions_allowed(uint16_t perms)
 +{
-+	(void)perms;
++	perms &= (PT_USER_MASK | PT_WRITABLE_MASK | PT_PRESENT_MASK);
++
++	/* AMD NPT cannot represent execute-only or write-only pages */
++	if ((perms & PT_PRESENT_MASK) == 0) {
++		if (perms & PT_WRITABLE_MASK)
++			return false;
++		if (perms & PT_USER_MASK)
++			return false;
++	}
 +	return true;
 +}
 +
  static void new_asid(struct vcpu_svm *svm, struct svm_cpu_data *sd)
  {
  	if (sd->next_asid > sd->max_asid) {
-@@ -2265,7 +2344,7 @@ static int gp_interception(struct kvm_vc
+@@ -1955,6 +2063,13 @@ static int db_interception(struct kvm_vc
+ 	struct kvm_run *kvm_run = vcpu->run;
+ 	struct vcpu_svm *svm = to_svm(vcpu);
+ 
++	if (vcpu->monitor_trap_flag && vcpu->introspection_mm) {
++		kvm_deliver_monitor_trap_flag_event(vcpu);
++		kvm_set_rflags(vcpu, kvm_get_rflags(vcpu) & ~X86_EFLAGS_TF);
++		vcpu->monitor_trap_flag = false;
++		return 1;
++	}
++
+ 	if (!(vcpu->guest_debug &
+ 	      (KVM_GUESTDBG_SINGLESTEP | KVM_GUESTDBG_USE_HW_BP)) &&
+ 		!svm->nmi_singlestep) {
+@@ -2265,7 +2380,7 @@ static int gp_interception(struct kvm_vc
  	opcode = svm_instr_opcode(vcpu);
  
  	if (opcode == NONE_SVM_INSTR) {
@@ -2395,7 +2441,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/svm/svm.c
  			goto reinject;
  
  		/*
-@@ -2534,6 +2613,7 @@ static int cr_interception(struct kvm_vc
+@@ -2534,6 +2649,7 @@ static int cr_interception(struct kvm_vc
  		trace_kvm_cr_write(cr, val);
  		switch (cr) {
  		case 0:
@@ -2403,7 +2449,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/svm/svm.c
  			if (!check_selective_cr0_intercepted(vcpu, val))
  				err = kvm_set_cr0(vcpu, val);
  			else
-@@ -2541,12 +2621,15 @@ static int cr_interception(struct kvm_vc
+@@ -2541,12 +2657,15 @@ static int cr_interception(struct kvm_vc
  
  			break;
  		case 3:
@@ -2419,7 +2465,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/svm/svm.c
  			err = kvm_set_cr8(vcpu, val);
  			break;
  		default:
-@@ -2564,12 +2647,14 @@ static int cr_interception(struct kvm_vc
+@@ -2564,12 +2683,14 @@ static int cr_interception(struct kvm_vc
  			break;
  		case 3:
  			val = kvm_read_cr3(vcpu);
@@ -2434,7 +2480,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/svm/svm.c
  			break;
  		default:
  			WARN(1, "unhandled read from CR%d", cr);
-@@ -2754,7 +2839,8 @@ static int svm_get_msr(struct kvm_vcpu *
+@@ -2754,7 +2875,8 @@ static int svm_get_msr(struct kvm_vcpu *
  		break;
  #endif
  	case MSR_IA32_SYSENTER_CS:
@@ -2444,7 +2490,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/svm/svm.c
  		break;
  	case MSR_IA32_SYSENTER_EIP:
  		msr_info->data = (u32)svm->vmcb01.ptr->save.sysenter_eip;
-@@ -5187,6 +5273,13 @@ static struct kvm_x86_ops svm_x86_ops __
+@@ -5187,6 +5309,13 @@ static struct kvm_x86_ops svm_x86_ops __
  	.gmem_prepare = sev_gmem_prepare,
  	.gmem_invalidate = sev_gmem_invalidate,
  	.private_max_mapping_level = sev_private_max_mapping_level,

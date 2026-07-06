@@ -34,7 +34,7 @@ _USE_KERNEL_CONFIG=${USE_KERNEL_CONFIG:=""}
 _KERNEL_SYMVERS_FILE=${KERNEL_SYMVERS_FILE:="/usr/src/linux-headers-${_KERNEL_VERSION_FULL}/Module.symvers"}
 
 # These final variables are for the deb package versioning and maintainer info.
-_PATCH_VERSION=${PATCH_VERSION:="1.1.0"}
+_PATCH_VERSION=${PATCH_VERSION:="1.2.0"}
 _EMAIL="${DEBEMAIL:=laplantes@ainfosec.com}"
 _FULLNAME="${DEBFULLNAME:=Sean LaPlante}"
 
