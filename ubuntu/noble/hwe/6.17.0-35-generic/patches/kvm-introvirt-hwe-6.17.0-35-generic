@@ -2141,12 +2141,78 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/mmu/tdp_mmu.c
 ===================================================================
 --- 6.17.0-35-generic.orig/kernel/arch/x86/kvm/mmu/tdp_mmu.c
 +++ 6.17.0-35-generic/kernel/arch/x86/kvm/mmu/tdp_mmu.c
-@@ -1991,3 +1991,128 @@ u64 *kvm_tdp_mmu_fast_pf_get_last_sptep(
+@@ -1991,3 +1991,189 @@ u64 *kvm_tdp_mmu_fast_pf_get_last_sptep(
  	 */
  	return rcu_dereference(sptep);
  }
 +
-+/* IntroVirt Patch */
++/*
++ * IntroVirt: userspace encodes allowed HAP perms in EPT-shaped bits:
++ *   bit0 (PT_PRESENT)  = allow read
++ *   bit1 (PT_WRITABLE) = allow write
++ *   bit2 (PT_USER)     = allow execute
++ * On Intel EPT those bits map 1:1 onto R/W/X. On AMD NPT they must be
++ * translated onto P/W/NX (Present implies readable; NX controls execute).
++ */
++static uint8_t kvm_tdp_encode_hap_perms(u64 spte)
++{
++	uint8_t perms = 0;
++
++	if (shadow_x_mask) {
++		/* EPT: present/writable/user == R/W/X */
++		return spte & (PT_PRESENT_MASK | PT_WRITABLE_MASK | PT_USER_MASK);
++	}
++
++	/* NPT */
++	if (spte & PT_PRESENT_MASK) {
++		perms |= PT_PRESENT_MASK;
++		if (spte & PT_WRITABLE_MASK)
++			perms |= PT_WRITABLE_MASK;
++		if (!(spte & shadow_nx_mask))
++			perms |= PT_USER_MASK; /* ABI execute-allowed */
++	}
++	return perms;
++}
++
++static u64 kvm_tdp_apply_hap_perms(u64 old_spte, uint8_t perms)
++{
++	const bool allow_r = perms & PT_PRESENT_MASK;
++	const bool allow_w = perms & PT_WRITABLE_MASK;
++	const bool allow_x = perms & PT_USER_MASK;
++	u64 new_spte = old_spte;
++
++	if (shadow_x_mask) {
++		/* EPT */
++		new_spte &= ~(PT_PRESENT_MASK | PT_WRITABLE_MASK | PT_USER_MASK);
++		new_spte |= perms;
++		if (allow_w)
++			new_spte |= shadow_mmu_writable_mask;
++		else
++			new_spte &= ~shadow_mmu_writable_mask;
++		return new_spte;
++	}
++
++	/* NPT: present implies readable; NX bit is inverted execute. */
++	if (!allow_r) {
++		new_spte &= ~PT_PRESENT_MASK;
++		new_spte &= ~(PT_WRITABLE_MASK | shadow_mmu_writable_mask);
++		return new_spte;
++	}
++
++	new_spte |= PT_PRESENT_MASK;
++	if (allow_w)
++		new_spte |= PT_WRITABLE_MASK | shadow_mmu_writable_mask;
++	else
++		new_spte &= ~(PT_WRITABLE_MASK | shadow_mmu_writable_mask);
++
++	if (allow_x)
++		new_spte &= ~shadow_nx_mask;
++	else
++		new_spte |= shadow_nx_mask;
++
++	return new_spte;
++}
++
 +int kvm_tdp_set_pte_perms(struct kvm_vcpu *vcpu, u64 gfn, uint8_t perms, uint8_t* original_perms)
 +{
 +	struct kvm_mmu_page *root;
@@ -2155,18 +2221,15 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/mmu/tdp_mmu.c
 +	u64 new_spte;
 +	int result = -ESRCH;
 +
-+	printk(KERN_DEBUG "Setting permissions 0x%x on gfn 0x%08llx\n", perms, gfn);
++	printk(KERN_DEBUG "IV-tdp_mmu: Setting permissions 0x%x on gfn 0x%08llx\n", perms, gfn);
 +
-+	// Turn off any extra bits in the perms
 +	perms &= (PT_USER_MASK | PT_WRITABLE_MASK | PT_PRESENT_MASK);
 +
-+	// Validate the HAP permissions are allowed
 +	if (unlikely(!kvm_x86_ops.hap_permissions_allowed(perms))) {
 +		printk(KERN_ERR "IV-tdp_mmu: HAP permissions not allowed\n");
 +		return -EINVAL;
 +	}
 +
-+	// Ensure the MMU is loaded
 +	if (!VALID_PAGE(vcpu->arch.mmu->root.hpa)) {
 +		result = kvm_mmu_load(vcpu);
 +		if (unlikely(result)) {
@@ -2175,7 +2238,6 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/mmu/tdp_mmu.c
 +		}
 +	}
 +
-+	// Get the TDP MMU root page
 +	root = root_to_sp(vcpu->arch.mmu->root.hpa);
 +	if (!root) {
 +		printk(KERN_ERR "IV-tdp_mmu: Failed to get TDP MMU root for vCPU %d\n", vcpu->vcpu_id);
@@ -2184,31 +2246,31 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/mmu/tdp_mmu.c
 +
 +	gfn_bits = kvm_gfn_root_bits(vcpu->kvm, root);
 +
-+	// Must hold RCU lock for TDP MMU operations
 +	rcu_read_lock();
++	read_lock(&vcpu->kvm->mmu_lock);
 +retry:
-+	// Start iterator to walk to target guest frame number
 +	tdp_iter_start(&iter, root, PG_LEVEL_4K, gfn, gfn_bits);
 +
-+	/* Walk to the target SPTE */
 +	while (iter.valid && iter.gfn <= gfn) {
-+		/* Check if we found the target 4K page */
 +		if (iter.gfn == gfn && iter.level == PG_LEVEL_4K && is_last_spte(iter.old_spte, iter.level)) {
-+			/* Found the target SPTE, modify it */
-+			new_spte = (iter.old_spte &  ~(PT_USER_MASK | PT_WRITABLE_MASK | PT_PRESENT_MASK)) | perms;
++			new_spte = kvm_tdp_apply_hap_perms(iter.old_spte, perms);
 +
-+			if (original_perms != NULL) {
-+				*original_perms = (iter.old_spte & (PT_USER_MASK | PT_WRITABLE_MASK | PT_PRESENT_MASK));
-+			}
++			if (original_perms != NULL)
++				*original_perms = kvm_tdp_encode_hap_perms(iter.old_spte);
 +
-+			/* Atomically update the SPTE */
++			printk(KERN_DEBUG "IV-tdp_mmu: gfn 0x%08llx old_spte 0x%llx -> new_spte 0x%llx\n",
++			       gfn, iter.old_spte, new_spte);
++
 +			if (tdp_mmu_set_spte_atomic(vcpu->kvm, &iter, new_spte) != 0) {
 +				printk(KERN_ERR "IV-tdp_mmu: could not update spte, trying again.\n");
 +				continue;
 +			}
 +
-+			/* Invalidate TLB if needed */
-+			if (is_shadow_present_pte(iter.old_spte) && leaf_spte_change_needs_tlb_flush(iter.old_spte, new_spte)) {
++			/* Always flush after HAP perm change; NPT WP does not
++			 * clear mmu-writable in a way leaf_spte_change_needs_tlb_flush
++			 * would detect, and stale TLB entries miss watchpoints.
++			 */
++			if (is_shadow_present_pte(iter.old_spte) || is_shadow_present_pte(new_spte)) {
 +				printk(KERN_DEBUG "IV-tdp_mmu: TLB flush to update spte\n");
 +				kvm_flush_remote_tlbs_gfn(vcpu->kvm, iter.gfn, iter.level);
 +			}
@@ -2217,8 +2279,8 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/mmu/tdp_mmu.c
 +			break;
 +		}
 +
-+		/* Page not present or not at 4K level - need to page it in */
 +		if (!is_shadow_present_pte(iter.old_spte) || iter.level < PG_LEVEL_4K) {
++			read_unlock(&vcpu->kvm->mmu_lock);
 +			rcu_read_unlock();
 +			{
 +				int r;
@@ -2235,18 +2297,15 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/mmu/tdp_mmu.c
 +				}
 +			}
 +			rcu_read_lock();
++			read_lock(&vcpu->kvm->mmu_lock);
 +			goto retry;
 +		}
 +
-+		/*
-+		 * Present leaf at huge page level (2M or 1G): target gfn is inside
-+		 * this range but we need a 4K SPTE. Split the huge page so the
-+		 * next walk finds a 4K leaf.
-+		 */
 +		if (iter.level > PG_LEVEL_4K && is_last_spte(iter.old_spte, iter.level) && gfn >= iter.gfn && gfn < iter.gfn + KVM_PAGES_PER_HPAGE(iter.level)) {
 +			printk(KERN_DEBUG "IV-mmu: Present leaf at huge page. Splitting and retrying\n");
 +			struct kvm_memory_slot *slot;
 +
++			read_unlock(&vcpu->kvm->mmu_lock);
 +			rcu_read_unlock();
 +			slot = kvm_vcpu_gfn_to_memslot(vcpu, gfn);
 +			if (slot) {
@@ -2257,14 +2316,16 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/mmu/tdp_mmu.c
 +				write_unlock(&vcpu->kvm->mmu_lock);
 +			}
 +			rcu_read_lock();
++			read_lock(&vcpu->kvm->mmu_lock);
 +			goto retry;
 +		}
 +
 +		tdp_iter_next(&iter);
 +	}
++	read_unlock(&vcpu->kvm->mmu_lock);
 +	rcu_read_unlock();
 +
-+	if (result != 0 && iter.valid) {
++	if (result != 0) {
 +		printk(KERN_ERR "IV-mmu: Failed to find or modify SPTE for GFN 0x%08llx Code: %d\n", gfn, result);
 +	}
 +
@@ -2309,7 +2370,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/svm/svm.c
  
  #ifdef CONFIG_X86_64
  	svm_disable_intercept_for_msr(vcpu, MSR_GS_BASE, MSR_TYPE_RW);
-@@ -1847,6 +1853,108 @@ static void svm_update_exception_bitmap(
+@@ -1847,6 +1853,105 @@ static void svm_update_exception_bitmap(
  	}
  }
  
@@ -2403,22 +2464,19 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/svm/svm.c
 +
 +static bool svm_hap_permissions_allowed(uint16_t perms)
 +{
-+	perms &= (PT_USER_MASK | PT_WRITABLE_MASK | PT_PRESENT_MASK);
-+
-+	/* AMD NPT cannot represent execute-only or write-only pages */
-+	if ((perms & PT_PRESENT_MASK) == 0) {
-+		if (perms & PT_WRITABLE_MASK)
-+			return false;
-+		if (perms & PT_USER_MASK)
-+			return false;
-+	}
++	/*
++	 * Userspace passes EPT-shaped allow bits (R/W/X). kvm_tdp_set_pte_perms
++	 * translates them to NPT P/W/NX; any combination is expressible
++	 * (deny-read becomes non-present; deny-exec sets NX).
++	 */
++	(void)perms;
 +	return true;
 +}
 +
  static void new_asid(struct vcpu_svm *svm, struct svm_cpu_data *sd)
  {
  	if (sd->next_asid > sd->max_asid) {
-@@ -1955,6 +2063,13 @@ static int db_interception(struct kvm_vc
+@@ -1955,6 +2060,13 @@ static int db_interception(struct kvm_vc
  	struct kvm_run *kvm_run = vcpu->run;
  	struct vcpu_svm *svm = to_svm(vcpu);
  
@@ -2432,7 +2490,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/svm/svm.c
  	if (!(vcpu->guest_debug &
  	      (KVM_GUESTDBG_SINGLESTEP | KVM_GUESTDBG_USE_HW_BP)) &&
  		!svm->nmi_singlestep) {
-@@ -2265,7 +2380,7 @@ static int gp_interception(struct kvm_vc
+@@ -2265,7 +2377,7 @@ static int gp_interception(struct kvm_vc
  	opcode = svm_instr_opcode(vcpu);
  
  	if (opcode == NONE_SVM_INSTR) {
@@ -2441,7 +2499,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/svm/svm.c
  			goto reinject;
  
  		/*
-@@ -2534,6 +2649,7 @@ static int cr_interception(struct kvm_vc
+@@ -2534,6 +2646,7 @@ static int cr_interception(struct kvm_vc
  		trace_kvm_cr_write(cr, val);
  		switch (cr) {
  		case 0:
@@ -2449,7 +2507,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/svm/svm.c
  			if (!check_selective_cr0_intercepted(vcpu, val))
  				err = kvm_set_cr0(vcpu, val);
  			else
-@@ -2541,12 +2657,15 @@ static int cr_interception(struct kvm_vc
+@@ -2541,12 +2654,15 @@ static int cr_interception(struct kvm_vc
  
  			break;
  		case 3:
@@ -2465,7 +2523,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/svm/svm.c
  			err = kvm_set_cr8(vcpu, val);
  			break;
  		default:
-@@ -2564,12 +2683,14 @@ static int cr_interception(struct kvm_vc
+@@ -2564,12 +2680,14 @@ static int cr_interception(struct kvm_vc
  			break;
  		case 3:
  			val = kvm_read_cr3(vcpu);
@@ -2480,7 +2538,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/svm/svm.c
  			break;
  		default:
  			WARN(1, "unhandled read from CR%d", cr);
-@@ -2754,7 +2875,8 @@ static int svm_get_msr(struct kvm_vcpu *
+@@ -2754,7 +2872,8 @@ static int svm_get_msr(struct kvm_vcpu *
  		break;
  #endif
  	case MSR_IA32_SYSENTER_CS:
@@ -2490,7 +2548,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/svm/svm.c
  		break;
  	case MSR_IA32_SYSENTER_EIP:
  		msr_info->data = (u32)svm->vmcb01.ptr->save.sysenter_eip;
-@@ -5187,6 +5309,13 @@ static struct kvm_x86_ops svm_x86_ops __
+@@ -5187,6 +5306,13 @@ static struct kvm_x86_ops svm_x86_ops __
  	.gmem_prepare = sev_gmem_prepare,
  	.gmem_invalidate = sev_gmem_invalidate,
  	.private_max_mapping_level = sev_private_max_mapping_level,
