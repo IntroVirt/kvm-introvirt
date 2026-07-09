@@ -2490,7 +2490,19 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/svm/svm.c
  	if (!(vcpu->guest_debug &
  	      (KVM_GUESTDBG_SINGLESTEP | KVM_GUESTDBG_USE_HW_BP)) &&
  		!svm->nmi_singlestep) {
-@@ -2265,7 +2377,7 @@ static int gp_interception(struct kvm_vc
+@@ -1988,6 +2100,11 @@ static int bp_interception(struct kvm_vc
+ 	struct vcpu_svm *svm = to_svm(vcpu);
+ 	struct kvm_run *kvm_run = vcpu->run;
+ 
++	if (vcpu->introspection_mm) {
++		kvm_deliver_trap_event(vcpu, BP_VECTOR);
++		return 1;
++	}
++
+ 	kvm_run->exit_reason = KVM_EXIT_DEBUG;
+ 	kvm_run->debug.arch.pc = svm->vmcb->save.cs.base + svm->vmcb->save.rip;
+ 	kvm_run->debug.arch.exception = BP_VECTOR;
+@@ -2265,7 +2382,7 @@ static int gp_interception(struct kvm_vc
  	opcode = svm_instr_opcode(vcpu);
  
  	if (opcode == NONE_SVM_INSTR) {
@@ -2499,7 +2511,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/svm/svm.c
  			goto reinject;
  
  		/*
-@@ -2534,6 +2646,7 @@ static int cr_interception(struct kvm_vc
+@@ -2534,6 +2651,7 @@ static int cr_interception(struct kvm_vc
  		trace_kvm_cr_write(cr, val);
  		switch (cr) {
  		case 0:
@@ -2507,7 +2519,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/svm/svm.c
  			if (!check_selective_cr0_intercepted(vcpu, val))
  				err = kvm_set_cr0(vcpu, val);
  			else
-@@ -2541,12 +2654,15 @@ static int cr_interception(struct kvm_vc
+@@ -2541,12 +2659,15 @@ static int cr_interception(struct kvm_vc
  
  			break;
  		case 3:
@@ -2523,7 +2535,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/svm/svm.c
  			err = kvm_set_cr8(vcpu, val);
  			break;
  		default:
-@@ -2564,12 +2680,14 @@ static int cr_interception(struct kvm_vc
+@@ -2564,12 +2685,14 @@ static int cr_interception(struct kvm_vc
  			break;
  		case 3:
  			val = kvm_read_cr3(vcpu);
@@ -2538,7 +2550,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/svm/svm.c
  			break;
  		default:
  			WARN(1, "unhandled read from CR%d", cr);
-@@ -2754,7 +2872,8 @@ static int svm_get_msr(struct kvm_vcpu *
+@@ -2754,7 +2877,8 @@ static int svm_get_msr(struct kvm_vcpu *
  		break;
  #endif
  	case MSR_IA32_SYSENTER_CS:
@@ -2548,7 +2560,7 @@ Index: 6.17.0-35-generic/kernel/arch/x86/kvm/svm/svm.c
  		break;
  	case MSR_IA32_SYSENTER_EIP:
  		msr_info->data = (u32)svm->vmcb01.ptr->save.sysenter_eip;
-@@ -5187,6 +5306,13 @@ static struct kvm_x86_ops svm_x86_ops __
+@@ -5187,6 +5311,13 @@ static struct kvm_x86_ops svm_x86_ops __
  	.gmem_prepare = sev_gmem_prepare,
  	.gmem_invalidate = sev_gmem_invalidate,
  	.private_max_mapping_level = sev_private_max_mapping_level,
