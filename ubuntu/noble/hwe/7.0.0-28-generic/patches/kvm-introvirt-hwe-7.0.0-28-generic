@@ -271,10 +271,12 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/vmx/main.c
 ===================================================================
 --- 7.0.0-28-generic.orig/kernel/arch/x86/kvm/vmx/main.c
 +++ 7.0.0-28-generic/kernel/arch/x86/kvm/vmx/main.c
-@@ -1016,6 +1016,13 @@ struct kvm_x86_ops vt_x86_ops __initdata
+@@ -1015,7 +1015,14 @@ struct kvm_x86_ops vt_x86_ops __initdata
+ 	.vcpu_mem_enc_ioctl = vt_op_tdx_only(vcpu_mem_enc_ioctl),
  	.vcpu_mem_enc_unlocked_ioctl = vt_op_tdx_only(vcpu_mem_enc_unlocked_ioctl),
  
- 	.gmem_max_mapping_level = vt_op_tdx_only(gmem_max_mapping_level)
+-	.gmem_max_mapping_level = vt_op_tdx_only(gmem_max_mapping_level)
++	.gmem_max_mapping_level = vt_op_tdx_only(gmem_max_mapping_level),
 +
 +	/* IntroVirt patch */
 +	.update_syscall_intercept = vmx_update_exception_bitmap,
@@ -607,11 +609,11 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
 +	kvm_x86_ops.set_efer(vcpu, vcpu->arch.efer);
 +
 +	// Update MSR_IA32_SYSENTER_CS
-+	kvm_set_msr(vcpu, MSR_IA32_SYSENTER_CS, vcpu->shadow_msr_ia32_sysenter_cs);
++	kvm_set_msr_ignored_check(vcpu, MSR_IA32_SYSENTER_CS, vcpu->shadow_msr_ia32_sysenter_cs, false);
 +
 +	// Turn on or off #UD/#GP intercept and SYSENTER_CS MSR intercept
 +	kvm_x86_ops.update_syscall_intercept(vcpu);
-+	kvm_x86_call(recalc_msr_intercepts)(vcpu);
++	kvm_x86_call(recalc_intercepts)(vcpu);
 +done:
 +	return rc;
 +}
