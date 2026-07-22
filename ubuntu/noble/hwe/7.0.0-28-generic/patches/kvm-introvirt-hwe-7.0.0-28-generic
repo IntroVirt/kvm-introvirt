@@ -1189,7 +1189,7 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
 +		kvm_deliver_introspection_event(vcpu, &event);
 +	}
 +}
-+EXPORT_SYMBOL(kvm_deliver_cr_read_event);
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_deliver_cr_read_event);
 +
 +void kvm_deliver_cr_write_event(struct kvm_vcpu *vcpu, int cr, u64 val)
 +{
@@ -1202,7 +1202,7 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
 +		kvm_deliver_introspection_event(vcpu, &event);
 +	}
 +}
-+EXPORT_SYMBOL(kvm_deliver_cr_write_event);
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_deliver_cr_write_event);
 +
 +void kvm_deliver_syscall_event(struct kvm_vcpu *vcpu, u64 return_address)
 +{
@@ -1215,7 +1215,7 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
 +		kvm_deliver_introspection_event(vcpu, &event);
 +	}
 +}
-+EXPORT_SYMBOL(kvm_deliver_syscall_event);
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_deliver_syscall_event);
 +
 +void kvm_deliver_sysenter_event(struct kvm_vcpu *vcpu, u64 return_address)
 +{
@@ -1228,7 +1228,7 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
 +		kvm_deliver_introspection_event(vcpu, &event);
 +	}
 +}
-+EXPORT_SYMBOL(kvm_deliver_sysenter_event);
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_deliver_sysenter_event);
 +
 +void kvm_deliver_sysret_event(struct kvm_vcpu *vcpu)
 +{
@@ -1240,7 +1240,7 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
 +		kvm_deliver_introspection_event(vcpu, &event);
 +	}
 +}
-+EXPORT_SYMBOL(kvm_deliver_sysret_event);
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_deliver_sysret_event);
 +
 +void kvm_deliver_sysexit_event(struct kvm_vcpu *vcpu)
 +{
@@ -1252,7 +1252,7 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
 +		kvm_deliver_introspection_event(vcpu, &event);
 +	}
 +}
-+EXPORT_SYMBOL(kvm_deliver_sysexit_event);
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_deliver_sysexit_event);
 +
 +void kvm_deliver_vmcall_event(struct kvm_vcpu *vcpu)
 +{
@@ -1260,7 +1260,7 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
 +	event.event_type = KVM_EVENT_HYPERCALL;
 +	kvm_deliver_introspection_event(vcpu, &event);
 +}
-+EXPORT_SYMBOL(kvm_deliver_vmcall_event);
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_deliver_vmcall_event);
 +
 +void kvm_deliver_trap_event(struct kvm_vcpu *vcpu, int vector)
 +{
@@ -1269,7 +1269,7 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
 +	event.trap.vector = vector;
 +	kvm_deliver_introspection_event(vcpu, &event);
 +}
-+EXPORT_SYMBOL(kvm_deliver_trap_event);
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_deliver_trap_event);
 +
 +void kvm_deliver_monitor_trap_flag_event(struct kvm_vcpu *vcpu)
 +{
@@ -1277,7 +1277,7 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
 +	event.event_type = KVM_EVENT_SINGLE_STEP;
 +	kvm_deliver_introspection_event(vcpu, &event);
 +}
-+EXPORT_SYMBOL(kvm_deliver_monitor_trap_flag_event);
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_deliver_monitor_trap_flag_event);
 +
 +void kvm_deliver_reboot_event(struct kvm_vcpu *vcpu)
 +{
@@ -1285,7 +1285,7 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
 +	event.event_type = KVM_EVENT_REBOOT;
 +	kvm_deliver_introspection_event(vcpu, &event);
 +}
-+EXPORT_SYMBOL(kvm_deliver_reboot_event);
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_deliver_reboot_event);
 +
 +void kvm_deliver_shutdown_event(struct kvm_vcpu *vcpu)
 +{
@@ -1293,7 +1293,7 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
 +	event.event_type = KVM_EVENT_SHUTDOWN;
 +	kvm_deliver_introspection_event(vcpu, &event);
 +}
-+EXPORT_SYMBOL(kvm_deliver_shutdown_event);
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_deliver_shutdown_event);
 +
  void kvm_fixup_and_inject_pf_error(struct kvm_vcpu *vcpu, gva_t gva, u16 error_code)
  {
