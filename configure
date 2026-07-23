@@ -8,6 +8,11 @@
 # and the LSB_RELEASE variable to the desired Proxmox VE version (e.g., "pve-8.4").
 #
 
+# Set to true to prevent git clone and fallback to apt-get source for the kernel
+# This only works if you're running the kernel you're trying to patch. It's faster
+# than waiting for git clone in that case though.
+_NO_CLONE=${NO_CLONE:="false"}
+
 # The output of "uname -r" for the desired kernel. If not set, this will use the running kernel version.
 # For Ubuntu kernels, we expect the corresponding linux-headers and linux-modules packages to be installed.
 _KERNEL_VERSION_FULL=${KERNEL_VERSION_FULL:="$(uname -r)"}
@@ -71,7 +76,8 @@ get_ubuntu_kernel_source() {
     echo "Getting Ubuntu kernel source. This could take a bit..."
 
     # If we saved the kernel tag to a file, use that and short-circuit
-    if [[ -f "ubuntu-kernel-tag" ]]; then
+    if [[ -f "ubuntu-kernel-tag" && "${_NO_CLONE}" == "false" ]]; then
+        echo "Getting kernel source from git..."
         kernel_tag="$(cat ubuntu-kernel-tag)"
         echo "ubuntu-kernel-tag file found in patch directory ${_PATCH_DIR}. Cloning specified tag: ${kernel_tag}."
         if ! git clone --depth 1 --branch "${kernel_tag}" "${repo_url}" ./kernel; then
@@ -84,6 +90,7 @@ get_ubuntu_kernel_source() {
 
     # In this case, the `apt-get source linux-image-unsigned-...` should get the correct version
     if [[ "${_KERNEL_VERSION_FULL}" == "$(uname -r)" ]]; then
+        echo "Getting kernel source from apt..."
         if ! apt-get source linux-image-unsigned-"${_KERNEL_VERSION_FULL}"; then
             echo "Unable to find linux-image-unsigned-${_KERNEL_VERSION_FULL} for running kernel. Fallback to apt-cache lookup."
         else
