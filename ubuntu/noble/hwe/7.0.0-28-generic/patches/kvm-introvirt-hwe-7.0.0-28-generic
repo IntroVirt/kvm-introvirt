@@ -2181,7 +2181,7 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
  
  	if (unlikely(_IOC_TYPE(ioctl) != KVMIO))
  		return -EINVAL;
-@@ -4441,6 +4782,77 @@ static long kvm_vcpu_ioctl(struct file *
+@@ -4441,6 +4782,83 @@ static long kvm_vcpu_ioctl(struct file *
  	if (r != -ENOIOCTLCMD)
  		return r;
  
@@ -2232,11 +2232,17 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
 +		return r;
 +	}
 +	case KVM_SET_SYSCALL_FILTER: {
-+		if (mutex_lock_killable(&vcpu->mutex))
-+			return -EINTR;
++		/*
++		 * KVM_RUN holds vcpu->mutex for the whole guest run and drops
++		 * it when pause_count is set. Taking the mutex here waits
++		 * until that vCPU exits to userspace, which may be never.
++		 * Pause kicks it out first; it is not reading the filter
++		 * while it waits to be unpaused.
++		 */
++		kvm_vcpu_pause(vcpu);
 +		r = kvm_set_syscall_filter_page(&vcpu->syscall_filter_page,
 +						&vcpu->syscall_filter, arg);
-+		mutex_unlock(&vcpu->mutex);
++		kvm_vcpu_unpause(vcpu);
 +		return r;
 +	}
 +	}
@@ -2259,7 +2265,7 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
  	if (mutex_lock_killable(&vcpu->mutex))
  		return -EINTR;
  	switch (ioctl) {
-@@ -4577,11 +4989,19 @@ out_free1:
+@@ -4577,11 +4995,19 @@ out_free1:
  	}
  	case KVM_SET_GUEST_DEBUG: {
  		struct kvm_guest_debug dbg;
@@ -2280,7 +2286,7 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
  		break;
  	}
  	case KVM_SET_SIGNAL_MASK: {
-@@ -5158,8 +5578,8 @@ static long kvm_vm_ioctl(struct file *fi
+@@ -5158,8 +5584,8 @@ static long kvm_vm_ioctl(struct file *fi
  	void __user *argp = (void __user *)arg;
  	int r;
  
@@ -2291,7 +2297,7 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
  	switch (ioctl) {
  	case KVM_CREATE_VCPU:
  		r = kvm_vm_ioctl_create_vcpu(kvm, arg);
-@@ -5383,6 +5803,17 @@ static long kvm_vm_ioctl(struct file *fi
+@@ -5383,6 +5809,17 @@ static long kvm_vm_ioctl(struct file *fi
  		break;
  	}
  #endif
@@ -2309,7 +2315,7 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
  	default:
  		r = kvm_arch_vm_ioctl(filp, ioctl, arg);
  	}
-@@ -5470,11 +5901,99 @@ static long kvm_vm_compat_ioctl(struct f
+@@ -5470,11 +5907,99 @@ static long kvm_vm_compat_ioctl(struct f
  }
  #endif
  
@@ -2409,7 +2415,7 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
  };
  
  bool file_is_kvm(struct file *file)
-@@ -5526,10 +6045,39 @@ put_fd:
+@@ -5526,10 +6051,39 @@ put_fd:
  	return r;
  }
  
@@ -2449,7 +2455,7 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
  
  	switch (ioctl) {
  	case KVM_GET_API_VERSION:
-@@ -5554,6 +6102,57 @@ static long kvm_dev_ioctl(struct file *f
+@@ -5554,6 +6108,57 @@ static long kvm_dev_ioctl(struct file *f
  		r += PAGE_SIZE;    /* coalesced mmio ring page */
  #endif
  		break;
