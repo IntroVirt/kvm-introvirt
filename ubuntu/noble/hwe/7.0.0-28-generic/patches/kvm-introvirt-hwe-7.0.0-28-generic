@@ -593,7 +593,7 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
  	default:
  		break;
  	}
-@@ -6202,6 +6219,27 @@ static int kvm_get_reg_list(struct kvm_v
+@@ -6202,6 +6219,29 @@ static int kvm_get_reg_list(struct kvm_v
  	return 0;
  }
  
@@ -618,10 +618,12 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
 +	return rc;
 +}
 +
++static bool kvm_introvirt_arm_sysret(struct kvm_vcpu *vcpu, u64 *cr3, u64 *rsp);
++
  long kvm_arch_vcpu_ioctl(struct file *filp,
  			 unsigned int ioctl, unsigned long arg)
  {
-@@ -6672,6 +6710,107 @@ long kvm_arch_vcpu_ioctl(struct file *fi
+@@ -6672,6 +6712,121 @@ long kvm_arch_vcpu_ioctl(struct file *fi
  			goto out;
  		r = kvm_x86_ops.vcpu_mem_enc_ioctl(vcpu, argp);
  		break;
@@ -705,9 +707,23 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
 +			break;
 +		}
 +
-+		r = x86_emulate_insn(ctxt, false);
-+		if (r != EMULATION_OK)
-+			break;
++		/*
++		 * Record user CR3/RSP before emulation. SYSENTER replaces RSP;
++		 * the guest restores this value on SYSEXIT. Drop the record if
++		 * emulation fails so the slot is not leaked.
++		 */
++		{
++			u64 arm_cr3, arm_rsp;
++			bool armed = kvm_introvirt_arm_sysret(vcpu, &arm_cr3, &arm_rsp);
++
++			r = x86_emulate_insn(ctxt, false);
++			if (r != EMULATION_OK) {
++				if (armed)
++					kvm_syscall_ret_pending_consume(vcpu->kvm, arm_cr3,
++									arm_rsp);
++				break;
++			}
++		}
 +
 +		kvm_rip_write(vcpu, ctxt->eip);
 +		__kvm_set_rflags(vcpu, ctxt->eflags);
@@ -729,7 +745,7 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
  	default:
  		r = -EINVAL;
  	}
-@@ -7626,6 +7765,115 @@ set_pit2_out:
+@@ -7626,6 +7781,115 @@ set_pit2_out:
  		r = kvm_vm_ioctl_set_msr_filter(kvm, &filter);
  		break;
  	}
@@ -845,7 +861,7 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
  	default:
  		r = -ENOTTY;
  	}
-@@ -9445,6 +9693,8 @@ int x86_emulate_instruction(struct kvm_v
+@@ -9445,6 +9709,8 @@ int x86_emulate_instruction(struct kvm_v
  	int r;
  	struct x86_emulate_ctxt *ctxt = vcpu->arch.emulate_ctxt;
  	bool writeback = true;
@@ -854,7 +870,7 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
  
  	if ((emulation_type & EMULTYPE_ALLOW_RETRY_PF) &&
  	    (WARN_ON_ONCE(is_guest_mode(vcpu)) ||
-@@ -9509,10 +9759,54 @@ int x86_emulate_instruction(struct kvm_v
+@@ -9509,10 +9775,62 @@ int x86_emulate_instruction(struct kvm_v
  		}
  	}
  
@@ -872,9 +888,13 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
 +			switch(ctxt->fetch.data[i + 1]) {
 +			case 0x05: { // SYSCALL
 +				const u64 original_rip = kvm_rip_read(vcpu);
-+				kvm_deliver_syscall_event(vcpu, original_rip + ctxt->opcode_len);
-+				if (kvm_rip_read(vcpu) != original_rip || vcpu->arch.exception.pending)
-+				    return 1;
++				if (kvm_deliver_syscall_event(vcpu, original_rip + ctxt->opcode_len)) {
++					if (kvm_rip_read(vcpu) != original_rip ||
++					    vcpu->arch.exception.pending)
++						return 1;
++					/* Instruction will run; RSP is still the user stack. */
++					kvm_introvirt_arm_sysret(vcpu, NULL, NULL);
++				}
 +				break;
 +			}
 +			case 0x07: // SYSRET
@@ -893,9 +913,13 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
 +			switch(ctxt->fetch.data[i + 1]) {
 +			case 0x34: { /* SYSENTER */
 +				const u64 original_rip = kvm_rip_read(vcpu);
-+				kvm_deliver_sysenter_event(vcpu, original_rip + ctxt->opcode_len);
-+				if (kvm_rip_read(vcpu) != original_rip || vcpu->arch.exception.pending)
-+				    return 1;
++				if (kvm_deliver_sysenter_event(vcpu, original_rip + ctxt->opcode_len)) {
++					if (kvm_rip_read(vcpu) != original_rip ||
++					    vcpu->arch.exception.pending)
++						return 1;
++					/* Not emulated yet, so RSP is still the user stack. */
++					kvm_introvirt_arm_sysret(vcpu, NULL, NULL);
++				}
 +				handled = true;
 +			    break;
 +			}
@@ -913,7 +937,7 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
  	}
  
  	/*
-@@ -9658,6 +9952,11 @@ writeback:
+@@ -9658,6 +9976,11 @@ writeback:
  	} else
  		vcpu->arch.emulate_regs_need_sync_to_vcpu = true;
  
@@ -925,7 +949,7 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
  	return r;
  }
  
-@@ -10510,6 +10809,28 @@ EXPORT_SYMBOL_FOR_KVM_INTERNAL(____kvm_e
+@@ -10510,6 +10833,28 @@ EXPORT_SYMBOL_FOR_KVM_INTERNAL(____kvm_e
  
  int kvm_emulate_hypercall(struct kvm_vcpu *vcpu)
  {
@@ -954,7 +978,7 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
  	if (kvm_xen_hypercall_enabled(vcpu->kvm))
  		return kvm_xen_hypercall(vcpu);
  
-@@ -11705,6 +12026,26 @@ static int vcpu_run(struct kvm_vcpu *vcp
+@@ -11705,6 +12050,26 @@ static int vcpu_run(struct kvm_vcpu *vcp
  			r = vcpu_block(vcpu);
  		}
  
@@ -981,7 +1005,7 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
  		if (r <= 0)
  			break;
  
-@@ -11735,6 +12076,48 @@ static int vcpu_run(struct kvm_vcpu *vcp
+@@ -11735,6 +12100,48 @@ static int vcpu_run(struct kvm_vcpu *vcp
  	return r;
  }
  
@@ -1030,7 +1054,7 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
  static int __kvm_emulate_halt(struct kvm_vcpu *vcpu, int state, int reason)
  {
  	/*
-@@ -12418,6 +12801,12 @@ static int __set_sregs_common(struct kvm
+@@ -12418,6 +12825,12 @@ static int __set_sregs_common(struct kvm
  	*mmu_reset_needed |= kvm_read_cr0(vcpu) != sregs->cr0;
  	kvm_x86_call(set_cr0)(vcpu, sregs->cr0);
  
@@ -1043,7 +1067,7 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
  	*mmu_reset_needed |= kvm_read_cr4(vcpu) != sregs->cr4;
  	kvm_x86_call(set_cr4)(vcpu, sregs->cr4);
  
-@@ -14138,6 +14527,345 @@ int kvm_spec_ctrl_test_value(u64 value)
+@@ -14138,6 +14551,366 @@ int kvm_spec_ctrl_test_value(u64 value)
  }
  EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_spec_ctrl_test_value);
  
@@ -1260,6 +1284,27 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
 +	return READ_ONCE(f->deliver_returns) != 0;
 +}
 +
++/*
++ * Remember this syscall's user CR3/RSP so the matching SYSRET/SYSEXIT can be
++ * delivered. Returns false when return tracking is off. cr3/rsp may be NULL.
++ */
++static bool kvm_introvirt_arm_sysret(struct kvm_vcpu *vcpu, u64 *cr3, u64 *rsp)
++{
++	u64 arm_cr3, arm_rsp;
++
++	if (!kvm_introvirt_track_sysret(vcpu))
++		return false;
++
++	arm_cr3 = kvm_read_cr3(vcpu);
++	arm_rsp = kvm_rsp_read(vcpu);
++	kvm_syscall_ret_pending_insert(vcpu->kvm, arm_cr3, arm_rsp);
++	if (cr3)
++		*cr3 = arm_cr3;
++	if (rsp)
++		*rsp = arm_rsp;
++	return true;
++}
++
 +static bool kvm_introvirt_want_sysret(struct kvm_vcpu *vcpu)
 +{
 +	struct kvm_syscall_filter *f = vcpu->kvm->syscall_filter;
@@ -1269,47 +1314,47 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.c
 +	if (!READ_ONCE(f->deliver_returns))
 +		return false;
 +
++	/*
++	 * A full pending table sets syscall_ret_lost. Consume reports that
++	 * under the table lock so a return is not dropped in the race.
++	 */
 +	return kvm_syscall_ret_pending_consume(vcpu->kvm, kvm_read_cr3(vcpu),
 +					       kvm_rsp_read(vcpu));
 +}
 +
-+void kvm_deliver_syscall_event(struct kvm_vcpu *vcpu, u64 return_address)
++bool kvm_deliver_syscall_event(struct kvm_vcpu *vcpu, u64 return_address)
 +{
++	struct kvm_introspection_event event;
++
 +	if (!vcpu->syscall_hook_enabled)
-+		return;
++		return false;
 +
 +	if (!kvm_introvirt_syscall_wanted(vcpu))
-+		return;
-+	if (kvm_introvirt_track_sysret(vcpu))
-+		kvm_syscall_ret_pending_insert(vcpu->kvm, kvm_read_cr3(vcpu),
-+					       kvm_rsp_read(vcpu));
-+	{
-+		struct kvm_introspection_event event;
-+		event.event_type = KVM_EVENT_FAST_SYSCALL;
-+		event.system_call.type = KVM_EVENT_SYSTEM_CALL_TYPE_SYSCALL;
-+		event.system_call.return_address = return_address;
-+		kvm_deliver_introspection_event(vcpu, &event);
-+	}
++		return false;
++
++	event.event_type = KVM_EVENT_FAST_SYSCALL;
++	event.system_call.type = KVM_EVENT_SYSTEM_CALL_TYPE_SYSCALL;
++	event.system_call.return_address = return_address;
++	kvm_deliver_introspection_event(vcpu, &event);
++	return true;
 +}
 +EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_deliver_syscall_event);
 +
-+void kvm_deliver_sysenter_event(struct kvm_vcpu *vcpu, u64 return_address)
++bool kvm_deliver_sysenter_event(struct kvm_vcpu *vcpu, u64 return_address)
 +{
++	struct kvm_introspection_event event;
++
 +	if (!vcpu->syscall_hook_enabled)
-+		return;
++		return false;
 +
 +	if (!kvm_introvirt_syscall_wanted(vcpu))
-+		return;
-+	if (kvm_introvirt_track_sysret(vcpu))
-+		kvm_syscall_ret_pending_insert(vcpu->kvm, kvm_read_cr3(vcpu),
-+					       kvm_rsp_read(vcpu));
-+	{
-+		struct kvm_introspection_event event;
-+		event.event_type = KVM_EVENT_FAST_SYSCALL;
-+		event.system_call.type = KVM_EVENT_SYSTEM_CALL_TYPE_SYSENTER;
-+		event.system_call.return_address = return_address;
-+		kvm_deliver_introspection_event(vcpu, &event);
-+	}
++		return false;
++
++	event.event_type = KVM_EVENT_FAST_SYSCALL;
++	event.system_call.type = KVM_EVENT_SYSTEM_CALL_TYPE_SYSENTER;
++	event.system_call.return_address = return_address;
++	kvm_deliver_introspection_event(vcpu, &event);
++	return true;
 +}
 +EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_deliver_sysenter_event);
 +
@@ -1409,8 +1454,8 @@ Index: 7.0.0-28-generic/kernel/arch/x86/kvm/x86.h
 +
 +void kvm_deliver_cr_read_event(struct kvm_vcpu *vcpu, int cr, u64 val);
 +void kvm_deliver_cr_write_event(struct kvm_vcpu *vcpu, int cr, u64 val);
-+void kvm_deliver_syscall_event(struct kvm_vcpu *vcpu, u64 return_address);
-+void kvm_deliver_sysenter_event(struct kvm_vcpu *vcpu, u64 return_address);
++bool kvm_deliver_syscall_event(struct kvm_vcpu *vcpu, u64 return_address);
++bool kvm_deliver_sysenter_event(struct kvm_vcpu *vcpu, u64 return_address);
 +void kvm_deliver_sysret_event(struct kvm_vcpu *vcpu);
 +void kvm_deliver_sysexit_event(struct kvm_vcpu *vcpu);
 +void kvm_deliver_vmcall_event(struct kvm_vcpu *vcpu);
@@ -1491,7 +1536,7 @@ Index: 7.0.0-28-generic/kernel/include/linux/kvm_host.h
  struct kvm {
  #ifdef KVM_HAVE_MMU_RWLOCK
  	rwlock_t mmu_lock;
-@@ -876,6 +919,17 @@ struct kvm {
+@@ -876,6 +919,18 @@ struct kvm {
  	struct xarray mem_attr_array;
  #endif
  	char stats_id[KVM_STATS_NAME_SIZE];
@@ -1503,13 +1548,14 @@ Index: 7.0.0-28-generic/kernel/include/linux/kvm_host.h
 +	bool mem_event_enabled;
 +	struct page *syscall_filter_page;
 +	struct kvm_syscall_filter *syscall_filter;
-+	atomic64_t sysret_pending_overflow;
++	/* Set when a return could not be recorded. Cleared with the table. */
++	bool syscall_ret_lost;
 +	spinlock_t syscall_ret_lock;
 +	struct kvm_syscall_ret_pending_entry syscall_ret_pending[KVM_SYSCALL_RET_PENDING_SIZE];
  };
  
  #define kvm_err(fmt, ...) \
-@@ -1046,6 +1100,15 @@ void kvm_unlock_all_vcpus(struct kvm *kv
+@@ -1046,6 +1101,15 @@ void kvm_unlock_all_vcpus(struct kvm *kv
  void vcpu_load(struct kvm_vcpu *vcpu);
  void vcpu_put(struct kvm_vcpu *vcpu);
  
@@ -1525,7 +1571,7 @@ Index: 7.0.0-28-generic/kernel/include/linux/kvm_host.h
  #ifdef CONFIG_KVM_IOAPIC
  void kvm_arch_post_irq_ack_notifier_list_update(struct kvm *kvm);
  #else
-@@ -1546,8 +1609,12 @@ static inline void kvm_vcpu_kick(struct
+@@ -1546,8 +1610,12 @@ static inline void kvm_vcpu_kick(struct
  }
  #endif
  
@@ -1740,16 +1786,40 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
  	return kvm;
  
  out_err_no_debugfs:
-@@ -1339,6 +1351,18 @@ void kvm_put_kvm(struct kvm *kvm)
+@@ -1339,6 +1351,42 @@ void kvm_put_kvm(struct kvm *kvm)
  }
  EXPORT_SYMBOL_GPL(kvm_put_kvm);
  
++static void kvm_pause_all_vcpus(struct kvm *kvm)
++{
++	struct kvm_vcpu *vcpu;
++	unsigned long i;
++
++	kvm_for_each_vcpu(i, vcpu, kvm)
++		kvm_vcpu_pause(vcpu);
++}
++
++static void kvm_unpause_all_vcpus(struct kvm *kvm)
++{
++	struct kvm_vcpu *vcpu;
++	unsigned long i;
++
++	kvm_for_each_vcpu(i, vcpu, kvm)
++		kvm_vcpu_unpause(vcpu);
++}
++
 +static int kvm_vm_introvirt_release(struct inode *inode, struct file *filp)
 +{
 +	struct kvm *kvm = filp->private_data;
 +	printk(KERN_DEBUG "IV-kvm_main: Introvirt tool detaching\n");
++	/*
++	 * Pause before unpinning. KVM_RUN reads the filter page while holding
++	 * vcpu->mutex, and kvm_vcpu_pause waits for that mutex.
++	 */
++	kvm_pause_all_vcpus(kvm);
 +	kvm_clear_syscall_filter(&kvm->syscall_filter_page, &kvm->syscall_filter);
 +	kvm_clear_syscall_ret_pending(kvm);
++	kvm_unpause_all_vcpus(kvm);
 +	kvm->introspection_mm = NULL;
 +	kvm_put_kvm(kvm);
 +	printk(KERN_DEBUG "IV-kvm_main: Introvirt tool detached!\n");
@@ -1759,7 +1829,7 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
  /*
   * Used to put a reference that was taken on behalf of an object associated
   * with a user-visible file descriptor, e.g. a vcpu or device, if installation
-@@ -3664,6 +3688,9 @@ bool kvm_vcpu_block(struct kvm_vcpu *vcp
+@@ -3664,6 +3712,9 @@ bool kvm_vcpu_block(struct kvm_vcpu *vcp
  		if (kvm_vcpu_check_block(vcpu) < 0)
  			break;
  
@@ -1769,7 +1839,7 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
  		waited = true;
  		schedule();
  	}
-@@ -4098,16 +4125,84 @@ static int kvm_vcpu_release(struct inode
+@@ -4098,16 +4149,84 @@ static int kvm_vcpu_release(struct inode
  {
  	struct kvm_vcpu *vcpu = filp->private_data;
  
@@ -1854,7 +1924,7 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
  };
  
  /*
-@@ -4134,6 +4229,11 @@ static int vcpu_get_pid(void *data, u64
+@@ -4134,6 +4253,11 @@ static int vcpu_get_pid(void *data, u64
  
  DEFINE_SIMPLE_ATTRIBUTE(vcpu_get_pid_fops, vcpu_get_pid, NULL, "%llu\n");
  
@@ -1866,7 +1936,7 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
  static void kvm_create_vcpu_debugfs(struct kvm_vcpu *vcpu)
  {
  	struct dentry *debugfs_dentry;
-@@ -4275,6 +4375,43 @@ vcpu_decrement:
+@@ -4275,6 +4399,43 @@ vcpu_decrement:
  	return r;
  }
  
@@ -1910,7 +1980,7 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
  static int kvm_vcpu_ioctl_set_sigmask(struct kvm_vcpu *vcpu, sigset_t *sigset)
  {
  	if (sigset) {
-@@ -4409,6 +4546,159 @@ static int kvm_wait_for_vcpu_online(stru
+@@ -4409,6 +4570,163 @@ static int kvm_wait_for_vcpu_online(stru
  	return 0;
  }
  
@@ -1991,8 +2061,8 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
 +{
 +	spin_lock(&kvm->syscall_ret_lock);
 +	memset(kvm->syscall_ret_pending, 0, sizeof(kvm->syscall_ret_pending));
++	WRITE_ONCE(kvm->syscall_ret_lost, false);
 +	spin_unlock(&kvm->syscall_ret_lock);
-+	atomic64_set(&kvm->sysret_pending_overflow, 0);
 +}
 +
 +void kvm_syscall_ret_pending_insert(struct kvm *kvm, u64 cr3, u64 rsp)
@@ -2032,7 +2102,11 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
 +		goto out;
 +	}
 +
-+	atomic64_inc(&kvm->sysret_pending_overflow);
++	/*
++	 * The table is full. Deliver every later return until the table is
++	 * cleared. Dropping one would hang a userspace hook_return() waiter.
++	 */
++	WRITE_ONCE(kvm->syscall_ret_lost, true);
 +out:
 +	spin_unlock(&kvm->syscall_ret_lock);
 +}
@@ -2042,6 +2116,7 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
 +	struct kvm_syscall_ret_pending_entry *e;
 +	u32 i, start;
 +	bool found = false;
++	bool lost;
 +
 +	start = kvm_syscall_ret_hash(cr3, rsp);
 +	spin_lock(&kvm->syscall_ret_lock);
@@ -2060,17 +2135,16 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
 +		}
 +		i = (i + 1) & (KVM_SYSCALL_RET_PENDING_SIZE - 1);
 +	} while (i != start);
++	lost = READ_ONCE(kvm->syscall_ret_lost);
 +	spin_unlock(&kvm->syscall_ret_lock);
 +
-+	if (found)
-+		return true;
-+	return atomic64_dec_if_positive(&kvm->sysret_pending_overflow) >= 0;
++	return found || lost;
 +}
 +
  static long kvm_vcpu_ioctl(struct file *filp,
  			   unsigned int ioctl, unsigned long arg)
  {
-@@ -4418,8 +4708,8 @@ static long kvm_vcpu_ioctl(struct file *
+@@ -4418,8 +4736,8 @@ static long kvm_vcpu_ioctl(struct file *
  	struct kvm_fpu *fpu = NULL;
  	struct kvm_sregs *kvm_sregs = NULL;
  
@@ -2081,7 +2155,7 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
  
  	if (unlikely(_IOC_TYPE(ioctl) != KVMIO))
  		return -EINVAL;
-@@ -4441,6 +4731,74 @@ static long kvm_vcpu_ioctl(struct file *
+@@ -4441,6 +4759,77 @@ static long kvm_vcpu_ioctl(struct file *
  	if (r != -ENOIOCTLCMD)
  		return r;
  
@@ -2132,8 +2206,11 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
 +		return r;
 +	}
 +	case KVM_SET_SYSCALL_FILTER: {
++		if (mutex_lock_killable(&vcpu->mutex))
++			return -EINTR;
 +		r = kvm_set_syscall_filter_page(&vcpu->syscall_filter_page,
 +						&vcpu->syscall_filter, arg);
++		mutex_unlock(&vcpu->mutex);
 +		return r;
 +	}
 +	}
@@ -2156,7 +2233,7 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
  	if (mutex_lock_killable(&vcpu->mutex))
  		return -EINTR;
  	switch (ioctl) {
-@@ -4577,11 +4935,19 @@ out_free1:
+@@ -4577,11 +4966,19 @@ out_free1:
  	}
  	case KVM_SET_GUEST_DEBUG: {
  		struct kvm_guest_debug dbg;
@@ -2177,7 +2254,7 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
  		break;
  	}
  	case KVM_SET_SIGNAL_MASK: {
-@@ -5158,8 +5524,8 @@ static long kvm_vm_ioctl(struct file *fi
+@@ -5158,8 +5555,8 @@ static long kvm_vm_ioctl(struct file *fi
  	void __user *argp = (void __user *)arg;
  	int r;
  
@@ -2188,7 +2265,7 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
  	switch (ioctl) {
  	case KVM_CREATE_VCPU:
  		r = kvm_vm_ioctl_create_vcpu(kvm, arg);
-@@ -5383,6 +5749,15 @@ static long kvm_vm_ioctl(struct file *fi
+@@ -5383,6 +5780,17 @@ static long kvm_vm_ioctl(struct file *fi
  		break;
  	}
  #endif
@@ -2196,15 +2273,17 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
 +		r = kvm_vm_ioctl_attach_vcpu(kvm, arg);
 +		break;
 +	case KVM_SET_SYSCALL_FILTER:
++		kvm_pause_all_vcpus(kvm);
 +		r = kvm_set_syscall_filter_page(&kvm->syscall_filter_page,
 +						&kvm->syscall_filter, arg);
 +		if (!r)
 +			kvm_clear_syscall_ret_pending(kvm);
++		kvm_unpause_all_vcpus(kvm);
 +		break;
  	default:
  		r = kvm_arch_vm_ioctl(filp, ioctl, arg);
  	}
-@@ -5470,11 +5845,99 @@ static long kvm_vm_compat_ioctl(struct f
+@@ -5470,11 +5878,99 @@ static long kvm_vm_compat_ioctl(struct f
  }
  #endif
  
@@ -2304,7 +2383,7 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
  };
  
  bool file_is_kvm(struct file *file)
-@@ -5526,10 +5989,39 @@ put_fd:
+@@ -5526,10 +6022,39 @@ put_fd:
  	return r;
  }
  
@@ -2344,7 +2423,7 @@ Index: 7.0.0-28-generic/kernel/virt/kvm/kvm_main.c
  
  	switch (ioctl) {
  	case KVM_GET_API_VERSION:
-@@ -5554,6 +6046,57 @@ static long kvm_dev_ioctl(struct file *f
+@@ -5554,6 +6079,57 @@ static long kvm_dev_ioctl(struct file *f
  		r += PAGE_SIZE;    /* coalesced mmio ring page */
  #endif
  		break;
